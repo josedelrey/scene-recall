@@ -69,7 +69,9 @@ For a point in front of the camera,
 $$
 \mathbf{p}^C=
 \begin{bmatrix}
-X\\Y\\Z
+X \\
+Y \\
+Z
 \end{bmatrix},
 \qquad Z>0,
 \qquad
@@ -100,7 +102,9 @@ $f_x$ and $f_y$ are focal lengths in pixels. $(c_x,c_y)$ is the principal point 
 $$
 \tilde{\mathbf{u}}=
 \begin{bmatrix}
-u\\v\\1
+u \\
+v \\
+1
 \end{bmatrix},
 \qquad
 \tilde{\mathbf{u}}\sim K\mathbf{p}^C.
@@ -115,7 +119,9 @@ For pixel $(u,v)$ and **z-depth** $Z$,
 $$
 K^{-1}\tilde{\mathbf{u}}=
 \begin{bmatrix}
-x\\y\\1
+x \\
+y \\
+1
 \end{bmatrix},
 \qquad
 \mathbf{p}^C=ZK^{-1}\tilde{\mathbf{u}}.
