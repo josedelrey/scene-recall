@@ -1,6 +1,6 @@
 # RGB-D data contract
 
-Dataset adapters are the boundary between dataset-specific formats and SceneRecall's canonical RGB-D data. This contract defines the output of that boundary for SceneRecall v1.
+Dataset adapters are the boundary between dataset-specific formats and SceneRecall's canonical RGB-D data. This contract defines the output of that boundary for SceneRecall v1. Geometry and transform notation follow [Camera geometry](camera_geometry.md).
 
 ## Structure
 
