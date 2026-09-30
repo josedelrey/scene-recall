@@ -143,3 +143,26 @@ def test_backproject_project_round_trip() -> None:
     pixels = project_points(backproject_depth(depth, K), K)
 
     np.testing.assert_allclose(pixels, [[[0.0, 0.0], [1.0, 0.0]], [[0.0, 1.0], [1.0, 1.0]]])
+
+
+def test_depth_pixel_to_rgb_pixel() -> None:
+    depth = np.full((2, 3), np.nan, dtype=np.float32)
+    depth[1, 2] = 4.0
+    K_D = np.array([[4.0, 0.0, 1.0], [0.0, 2.0, 0.0], [0.0, 0.0, 1.0]])
+    T_RD = np.array(
+        [
+            [0.0, -1.0, 0.0, 3.0],
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 2.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    )
+    K_R = np.array([[6.0, 0.0, 2.0], [0.0, 3.0, 4.0], [0.0, 0.0, 1.0]])
+
+    points_D = backproject_depth(depth, K_D)
+    points_R = transform_points(points_D, T_RD)
+    pixels_R = project_points(points_R, K_R)
+
+    np.testing.assert_array_equal(points_D[1, 2], [1.0, 2.0, 4.0])
+    np.testing.assert_array_equal(points_R[1, 2], [1.0, 2.0, 6.0])
+    np.testing.assert_array_equal(pixels_R[1, 2], [3.0, 5.0])
