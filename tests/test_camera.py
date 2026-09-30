@@ -1,6 +1,10 @@
 import numpy as np
 
-from scene_recall.geometry.camera import backproject_depth, transform_points
+from scene_recall.geometry.camera import (
+    backproject_depth,
+    project_points,
+    transform_points,
+)
 
 
 def test_backproject_depth_known_pixels() -> None:
@@ -88,3 +92,54 @@ def test_transform_points_propagates_nan() -> None:
 
     assert np.isnan(transformed[0]).all()
     np.testing.assert_array_equal(transformed[1], [3.0, -1.0, 7.0])
+
+
+def test_project_points_known_pixels() -> None:
+    K = np.array([[4.0, 0.0, 2.0], [0.0, 2.0, 3.0], [0.0, 0.0, 1.0]])
+    points = np.array([[0.0, 0.0, 5.0], [2.0, -3.0, 2.0]])
+
+    pixels = project_points(points, K)
+
+    np.testing.assert_array_equal(pixels, [[2.0, 3.0], [6.0, 0.0]])
+
+
+def test_project_points_preserves_leading_dimensions() -> None:
+    K = np.eye(3)
+    points = np.array(
+        [
+            [[0.0, 0.0, 1.0], [2.0, 0.0, 2.0]],
+            [[0.0, 3.0, 3.0], [4.0, 6.0, 2.0]],
+        ]
+    )
+
+    pixels = project_points(points, K)
+
+    assert pixels.shape == (2, 2, 2)
+    np.testing.assert_array_equal(pixels, [[[0.0, 0.0], [1.0, 0.0]], [[0.0, 1.0], [2.0, 3.0]]])
+
+
+def test_project_points_non_projectable_points() -> None:
+    points = np.array(
+        [
+            [1.0, 2.0, 0.0],
+            [1.0, 2.0, -1.0],
+            [np.nan, 0.0, 2.0],
+            [0.0, np.inf, 2.0],
+            [0.0, 0.0, np.inf],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+
+    pixels = project_points(points, np.eye(3))
+
+    assert np.isnan(pixels[:5]).all()
+    np.testing.assert_array_equal(pixels[5], [0.0, 0.0])
+
+
+def test_backproject_project_round_trip() -> None:
+    depth = np.array([[2.0, 3.0], [4.0, 5.0]], dtype=np.float32)
+    K = np.array([[2.0, 0.0, 0.5], [0.0, 4.0, 0.5], [0.0, 0.0, 1.0]])
+
+    pixels = project_points(backproject_depth(depth, K), K)
+
+    np.testing.assert_allclose(pixels, [[[0.0, 0.0], [1.0, 0.0]], [[0.0, 1.0], [1.0, 1.0]]])
