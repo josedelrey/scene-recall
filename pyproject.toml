@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Persistent open-vocabulary 3D scene memory for robotic perception"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "numpy>=2.5.3",
+]
 
 [build-system]
 requires = ["setuptools>=61"]
