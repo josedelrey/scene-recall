@@ -1,6 +1,6 @@
 # RGB-D data contract
 
-Dataset adapters are the boundary between dataset-specific formats and SceneRecall's canonical RGB-D data. This contract defines the output of that boundary for SceneRecall v1. Geometry and transform notation follow [Camera geometry](camera_geometry.md).
+Dataset adapters are the boundary between dataset-specific formats and SceneRecall's canonical RGB-D data. This contract defines the output of that boundary for SceneRecall v1.
 
 ## Structure
 
@@ -10,7 +10,7 @@ Dataset adapters are the boundary between dataset-specific formats and SceneReca
 | Shared calibration | One sequence | `K_R`, `K_D`, and `T_RD` |
 | `Observation` | One associated RGB and depth pair | Canonical RGB view, canonical depth view, and `frame_index` |
 
-An observation may also carry a timestamp, a reference pose, and provenance. `frame_index` is zero-based and contiguous within its sequence. The optional timestamp is a `float64` number of seconds relative to sequence start and refers to the depth view. The adapter associates the RGB view with that depth view before producing the observation.
+An observation may also carry a timestamp, a reference pose, and provenance. `frame_index` is zero-based and contiguous within its sequence. The optional timestamp is a `float64` number of seconds and refers to the depth view. The adapter associates the RGB view with that depth view before producing the observation.
 
 ## Canonical views and frames
 
@@ -74,4 +74,6 @@ Provenance is optional and non-normative. It may record source IDs, filenames, o
 
 ## Adapter responsibilities
 
-Adapters parse source data, associate RGB and depth in time, and normalize depth units and conventions, invalid values, pose direction and representation, RGB channel order, and calibration into this contract. Source range measurements must be converted to z-depth. Adapters must resolve source-specific distortion or rectification so the supplied canonical views and intrinsics agree. They do not perform downstream or model-specific preprocessing. All internal geometric quantities use meters.
+Adapters parse source data, associate RGB and depth in time, and normalize depth units and conventions, invalid values, pose direction and representation, RGB channel order, and calibration into this contract. Source range measurements must be converted to z-depth. Adapters must account for source-specific distortion, rectification, or pre-registration as needed so that the supplied canonical views and intrinsics are geometrically consistent. The contract does not require a universal rectification or registration strategy.
+
+Adapters do not perform downstream or model-specific preprocessing. All internal geometric quantities use meters. SceneRecall core code must not contain dataset-specific parsing, naming, synchronization, unit-conversion, calibration, or pose-convention logic.
