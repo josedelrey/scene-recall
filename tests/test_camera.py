@@ -115,7 +115,9 @@ def test_project_points_preserves_leading_dimensions() -> None:
     pixels = project_points(points, K)
 
     assert pixels.shape == (2, 2, 2)
-    np.testing.assert_array_equal(pixels, [[[0.0, 0.0], [1.0, 0.0]], [[0.0, 1.0], [2.0, 3.0]]])
+    np.testing.assert_array_equal(
+        pixels, [[[0.0, 0.0], [1.0, 0.0]], [[0.0, 1.0], [2.0, 3.0]]]
+    )
 
 
 def test_project_points_non_projectable_points() -> None:
@@ -142,7 +144,9 @@ def test_backproject_project_round_trip() -> None:
 
     pixels = project_points(backproject_depth(depth, K), K)
 
-    np.testing.assert_allclose(pixels, [[[0.0, 0.0], [1.0, 0.0]], [[0.0, 1.0], [1.0, 1.0]]])
+    np.testing.assert_allclose(
+        pixels, [[[0.0, 0.0], [1.0, 0.0]], [[0.0, 1.0], [1.0, 1.0]]]
+    )
 
 
 def test_depth_pixel_to_rgb_pixel() -> None:

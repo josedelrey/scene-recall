@@ -350,9 +350,7 @@ def test_contract_fields_integrate_with_geometry(
 ) -> None:
     pose = np.eye(4)
     pose[:3, 3] = [1.0, 2.0, 3.0]
-    sequence = Sequence(
-        "canonical", calibration, (replace(observation, T_WC_D=pose),)
-    )
+    sequence = Sequence("canonical", calibration, (replace(observation, T_WC_D=pose),))
     view = sequence.observations[0]
     shared = sequence.calibration
 
