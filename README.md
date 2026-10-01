@@ -43,6 +43,15 @@ XYZ in binary little-endian PLY. Coordinates remain in the canonical depth-camer
 frame `C_D`, in meters, with +x right, +y down, and +z forward. The reference pose
 is unused. No points are downsampled.
 
+Add `--color` to include uint8 red, green, and blue properties. For color sampling,
+points are transformed from `C_D` to `C_R` using `T_RD`, then projected with `K_R`.
+Exported XYZ remains in `C_D`. Finite projections within the RGB pixel-center
+bounds `[0, W_R - 1]` and `[0, H_R - 1]` are sampled at the nearest pixel using
+`floor(coordinate + 0.5)`, with half-pixel ties rounded toward the larger index.
+Outside or invalid projections retain their XYZ and receive black. The script
+reports their count. This experiment does not test visibility against an RGB
+depth map, so color association assumes the projected surface is visible.
+
 Keep source datasets outside the repository and generated point clouds under the
 ignored `outputs/` directory or outside the repository. The CLI accepts both
 paths explicitly.
