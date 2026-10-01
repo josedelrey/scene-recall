@@ -1,1 +1,0 @@
-"""Geometry components for SceneRecall."""
