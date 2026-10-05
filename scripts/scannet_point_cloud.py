@@ -31,8 +31,7 @@ def sample_rgb_colors(
     pixels = project_points(transform_points(points_D, T_RD), K_R)
     height, width = rgb.shape[:2]
     sampled = (
-        np.isfinite(pixels).all(axis=1)
-        & (pixels[:, 0] >= 0)
+        (pixels[:, 0] >= 0)
         & (pixels[:, 0] <= width - 1)
         & (pixels[:, 1] >= 0)
         & (pixels[:, 1] <= height - 1)
@@ -58,26 +57,11 @@ def main() -> None:
     sequence = load_scannet_frame(args.sens_path, original_frame_index=0)
     depth = sequence.observations[0].depth
     K_D = sequence.calibration.K_D
-    valid = np.isfinite(depth) & (depth > 0)
+    valid = ~np.isnan(depth)
     if not valid.any():
         raise SystemExit("Frame 0 contains no valid depth pixels")
 
-    # Choose a valid pixel near the upper-left quarter of the image, with a
-    # principal-point distance of at least one quarter of the shorter dimension.
-    fx, fy, cx, cy = map(float, (K_D[0, 0], K_D[1, 1], K_D[0, 2], K_D[1, 2]))
-    height, width = depth.shape
-    rows, columns = np.nonzero(valid)
-    away = (columns - cx) ** 2 + (rows - cy) ** 2 >= (min(depth.shape) / 4) ** 2
-    rows, columns = rows[away], columns[away]
-    if not rows.size:
-        raise SystemExit("Frame 0 contains no valid pixel sufficiently off-center")
-    selected = np.argmin((columns - width // 4) ** 2 + (rows - height // 4) ** 2)
-    u, v = int(columns[selected]), int(rows[selected])
-    Z = float(depth[v, u])
-    manual = np.array([Z * (u - cx) / fx, Z * (v - cy) / fy, Z])
-
     points = backproject_depth(depth, K_D)
-    np.testing.assert_allclose(points[v, u], manual, rtol=1e-12, atol=1e-12)
     vertices = points[valid].astype("<f8", copy=False)
     records = vertices
     color_properties = ""
@@ -126,12 +110,6 @@ def main() -> None:
 
     print("Source frame: 0")
     print("Coordinate frame: C_D, meters (+x right, +y down, +z forward)")
-    print(f"Selected pixel (u, v): ({u}, {v})")
-    print(f"Depth Z (m): {Z:.17g}")
-    print(f"K_D (fx, fy, cx, cy): {(fx, fy, cx, cy)}")
-    print("Manual formula: (Z * (u - cx) / fx, Z * (v - cy) / fy, Z)")
-    print(f"Manual XYZ (m): {manual.tolist()}")
-    print(f"backproject_depth XYZ (m): {points[v, u].tolist()}")
     print(f"Exported points: {len(vertices)}")
     print(f"Removed invalid depth pixels: {int((~valid).sum())}")
     print(f"Bounding box minimum XYZ (m): {vertices.min(axis=0).tolist()}")

@@ -1,13 +1,57 @@
 import runpy
+import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
+from scene_recall.data import Calibration, Observation, Sequence
 from scene_recall.geometry.camera import backproject_depth
 
-sample_rgb_colors = runpy.run_path(
+exporter = runpy.run_path(
     Path(__file__).parents[1] / "scripts" / "scannet_point_cloud.py"
-)["sample_rgb_colors"]
+)
+sample_rgb_colors = exporter["sample_rgb_colors"]
+
+
+@pytest.mark.parametrize("color", [False, True])
+def test_export_frame_with_only_valid_center_pixel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, color: bool
+) -> None:
+    depth = np.full((3, 3), np.nan, dtype=np.float32)
+    depth[1, 1] = 2.0
+    K = np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [0.0, 0.0, 1.0]])
+    calibration = Calibration(K, K, np.eye(4), (3, 3), (3, 3))
+    rgb = np.full((3, 3, 3), [10, 20, 30], dtype=np.uint8)
+    sequence = Sequence("center", calibration, (Observation(0, rgb, depth),))
+    output = tmp_path / "center.ply"
+    argv = [
+        "scannet_point_cloud.py",
+        "--sens-path",
+        "unused.sens",
+        "--output",
+        str(output),
+    ]
+    if color:
+        argv.append("--color")
+    main = exporter["main"]
+    monkeypatch.setitem(
+        main.__globals__, "load_scannet_frame", lambda *args, **kwargs: sequence
+    )
+    monkeypatch.setattr(sys, "argv", argv)
+
+    main()
+
+    header, payload = output.read_bytes().split(b"end_header\n", 1)
+    assert b"format binary_little_endian 1.0\n" in header
+    assert b"element vertex 1\n" in header
+    assert len(payload) == (27 if color else 24)
+    np.testing.assert_array_equal(np.frombuffer(payload[:24], dtype="<f8"), [0, 0, 2])
+    if color:
+        assert (
+            b"property uchar red\nproperty uchar green\nproperty uchar blue\n" in header
+        )
+        assert payload[24:] == bytes([10, 20, 30])
 
 
 def test_color_association_with_different_grids_and_half_pixel_ties() -> None:
