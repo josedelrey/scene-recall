@@ -72,6 +72,12 @@ $T_{WC_D}: C_D\rightarrow W$ is an optional reference pose for an observation. I
 
 Provenance is optional and non-normative. It may record source IDs, filenames, original timestamps, or other dataset metadata. Core algorithms must never depend on provenance to interpret canonical data.
 
+## Transform validation policy
+
+`data.py` checks only the structural invariants of $T_{RD}$ and $T_{WC_D}$: NumPy arrays with dtype `float64`, shape `(4, 4)`, finite entries, and an exact last row `[0, 0, 0, 1]`. Constructors retain the supplied arrays without conversion, copying, or repair.
+
+These fields represent rigid transforms, but structural validation does not establish membership in $SE(3)$. The canonical contract defines no numerical tolerance for rotation orthonormality or determinant. Consumers that require $SO(3)$ must apply a rotation-quality policy appropriate to their algorithm. Dataset adapters preserve source poses through canonical dtype and frame-convention handling without automatically repairing or projecting rotations to $SO(3)$.
+
 ## Adapter responsibilities
 
 Adapters parse source data, associate RGB and depth in time, and normalize depth units and conventions, invalid values, pose direction and representation, RGB channel order, and calibration into this contract. Source range measurements must be converted to z-depth. Adapters must account for source-specific distortion, rectification, or pre-registration as needed so that the supplied canonical views and intrinsics are geometrically consistent. The contract does not require a universal rectification or registration strategy.

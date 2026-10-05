@@ -232,7 +232,9 @@ def load_scannet_frame(
     RGB and depth are associated by their source frame record.
 
     The all-negative-infinity lost-tracking pose sentinel becomes None with a
-    provenance reason. Other poses use canonical validation without repair.
+    provenance reason. Finite poses with a homogeneous last row are preserved
+    as stored, apart from conversion to float64. Rotation quality is not checked,
+    and poses are never repaired or projected to SO(3).
     Invalid indices raise TypeError or IndexError. Unsupported or malformed
     source data raises ValueError. Filesystem errors propagate as OSError.
 

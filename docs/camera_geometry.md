@@ -52,6 +52,8 @@ $$
 
 The inverse translation is generally not $-\mathbf{t}_{WC}$ because it must be expressed in $C$.
 
+The rotation identities and transpose-based inverse above assume a rigid pose. The [canonical data contract](data_contract.md#transform-validation-policy) checks homogeneous structure without enforcing a numerical $SO(3)$ tolerance or repairing rotations. Consumers that rely on these identities must establish the rotation quality they require.
+
 Transforms compose in source-to-destination order:
 
 $$

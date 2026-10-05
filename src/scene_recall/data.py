@@ -7,7 +7,9 @@ mutate them after construction, including through other references.
 Both canonical optical frames use +x right, +y down, and +z forward. Adapters
 must establish image-grid calibration, depth units and convention, channel order,
 and pose frame conventions before constructing these objects. Structural checks
-cannot verify those source-data semantics.
+cannot verify those source-data semantics. Transform validation checks dtype,
+shape, finiteness, and the homogeneous last row. Rotation quality is a policy
+for consumers that require SO(3). Constructors do not repair transforms.
 """
 
 from collections.abc import Mapping
@@ -17,12 +19,12 @@ from math import isfinite
 import numpy as np
 from numpy.typing import NDArray
 
-_ROTATION_ATOL = 1e-6
-
 
 def _validate_array(name: str, array: np.ndarray, dtype: type[np.generic]) -> None:
     if not isinstance(array, np.ndarray):
         raise TypeError(f"{name} must be a NumPy array")
+    if isinstance(array, np.ma.MaskedArray):
+        raise TypeError(f"{name} must not be a masked array")
     if array.dtype != np.dtype(dtype):
         raise TypeError(f"{name} must have dtype {np.dtype(dtype)}")
 
@@ -53,19 +55,10 @@ def _validate_intrinsics(name: str, K: NDArray[np.float64]) -> None:
 
 
 def _validate_transform(name: str, T: NDArray[np.float64]) -> None:
-    """Require SE(3), with rotation atol=1e-6 and rtol=0.
-
-    Orthonormality and determinant +1 use the same absolute tolerance.
-    The homogeneous last row must equal [0, 0, 0, 1] exactly.
-    """
+    """Check homogeneous structure without assessing or repairing rotation."""
     _validate_matrix(name, T, (4, 4))
     if not np.array_equal(T[3], [0, 0, 0, 1]):
         raise ValueError(f"{name} must have homogeneous last row [0, 0, 0, 1]")
-    R = T[:3, :3]
-    if not np.allclose(R.T @ R, np.eye(3), atol=_ROTATION_ATOL, rtol=0):
-        raise ValueError(f"{name} rotation must be orthonormal within atol=1e-6")
-    if not np.isclose(np.linalg.det(R), 1.0, atol=_ROTATION_ATOL, rtol=0):
-        raise ValueError(f"{name} rotation determinant must be +1 within atol=1e-6")
 
 
 @dataclass(frozen=True, eq=False)
@@ -78,7 +71,7 @@ class Calibration:
 
     T_RD is a float64 (4, 4) transform from canonical C_D to canonical C_R,
     with translation in meters. Supply identity when these frames coincide,
-    even if their grids differ. Rotation validation uses atol=1e-6, rtol=0.
+    even if their grids differ. Rotation quality is not checked or repaired.
     Pinhole structure and the homogeneous last row are checked exactly.
     Canonical frames and calibration need not match native sensor frames.
     """
@@ -109,7 +102,7 @@ class Observation:
     timestamp is optional finite float seconds referring to the depth view.
     Its clock origin is adapter-defined, and monotonicity is not required.
     T_WC_D is an optional float64 (4, 4) reference pose from canonical C_D to W,
-    with translation in meters. Rotation validation uses atol=1e-6, rtol=0.
+    with translation in meters. Rotation quality is not checked or repaired.
     Adapters must verify a native pose's frame and transform direction before
     supplying T_WC_D. Reference poses are separate from odometry estimates.
 

@@ -21,9 +21,12 @@ image grids. Its output follows the [RGB-D data contract](data_contract.md).
 Preceding frame payloads are skipped. The original index and raw timestamps are
 recorded in provenance, while the one-observation sequence has canonical frame
 index 0.
-Zero depth timestamps are unavailable. Stored reference poses use canonical
-validation without repair, with the all-`-inf` tracking sentinel represented by
-`None`. See `load_scannet_frame`'s docstring for supported calibration and errors.
+Zero depth timestamps are unavailable. Finite stored reference poses with an
+exact homogeneous last row `[0, 0, 0, 1]` are preserved apart from conversion to
+`float64`. Rotation quality is not checked, and poses are never repaired or
+projected to $SO(3)$. The all-`-inf` tracking sentinel becomes `None` with a
+provenance reason. Other nonfinite poses and malformed homogeneous rows are
+rejected. See `load_scannet_frame`'s docstring for supported calibration and errors.
 
 ## Frame 0 point-cloud export
 

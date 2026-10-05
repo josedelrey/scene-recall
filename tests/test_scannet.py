@@ -211,14 +211,34 @@ def test_invalid_tracking_pose_is_optional(sens_factory) -> None:
     )
 
 
-@pytest.mark.parametrize("bad_value", [np.nan, np.inf, -np.inf, 1.000002])
-def test_other_invalid_poses_are_rejected_without_repair(
-    sens_factory, bad_value
-) -> None:
+@pytest.mark.parametrize("bad_value", [np.nan, np.inf, -np.inf])
+def test_other_nonfinite_poses_are_rejected(sens_factory, bad_value) -> None:
     pose = POSE.copy()
     pose[2, 2] = bad_value
     path = sens_factory(frame_changes={0: {"pose": pose}})
-    with pytest.raises(ValueError, match="T_WC_D"):
+    with pytest.raises(ValueError, match="T_WC_D must contain only finite"):
+        load_scannet_frame(path)
+
+
+@pytest.mark.parametrize("value", [1.000002, 2.0, -1.0, 0.0])
+def test_finite_poses_are_preserved_without_rotation_repair(
+    sens_factory, value
+) -> None:
+    pose = POSE.copy()
+    pose[2, 2] = value
+    path = sens_factory(frame_changes={0: {"pose": pose}})
+    observation = load_scannet_frame(path).observations[0]
+
+    assert observation.T_WC_D.dtype == np.float64
+    np.testing.assert_array_equal(observation.T_WC_D, pose.astype(np.float64))
+
+
+@pytest.mark.parametrize("column", [0, 1, 2, 3])
+def test_pose_requires_exact_homogeneous_last_row(sens_factory, column) -> None:
+    pose = POSE.copy()
+    pose[3, column] += 0.01
+    path = sens_factory(frame_changes={0: {"pose": pose}})
+    with pytest.raises(ValueError, match="T_WC_D must have homogeneous last row"):
         load_scannet_frame(path)
 
 

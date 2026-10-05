@@ -108,6 +108,46 @@ def test_timestamp_has_no_required_origin(
     assert replace(observation, timestamp=timestamp).timestamp == timestamp
 
 
+@pytest.mark.parametrize("field", ["rgb", "depth", "K_R", "K_D", "T_RD", "T_WC_D"])
+@pytest.mark.parametrize("mask", [np.ma.nomask, True])
+def test_canonical_arrays_reject_masked_array_type(
+    calibration: Calibration, observation: Observation, field: str, mask: object
+) -> None:
+    owner = observation if field in ("rgb", "depth", "T_WC_D") else calibration
+    array = np.eye(4) if field == "T_WC_D" else getattr(owner, field)
+    masked = np.ma.array(array, mask=mask)
+
+    with pytest.raises(TypeError, match=f"{field} must not be a masked array"):
+        replace(owner, **{field: masked})
+
+
+@pytest.mark.parametrize("field", ["K_R", "K_D", "T_RD", "T_WC_D"])
+def test_mask_cannot_hide_nonfinite_matrix_values(
+    calibration: Calibration, observation: Observation, field: str
+) -> None:
+    owner = observation if field == "T_WC_D" else calibration
+    matrix = np.eye(4 if field.startswith("T_") else 3)
+    matrix[0, 2] = np.nan
+    masked = np.ma.array(matrix, mask=np.isnan(matrix))
+
+    with pytest.raises(TypeError, match=f"{field} must not be a masked array"):
+        replace(owner, **{field: masked})
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0, np.inf])
+def test_mask_cannot_hide_invalid_depth_values(
+    observation: Observation, value: float
+) -> None:
+    depth = observation.depth.copy()
+    depth[0, 1] = value
+    mask = np.zeros(depth.shape, dtype=bool)
+    mask[0, 1] = True
+    masked = np.ma.array(depth, mask=mask)
+
+    with pytest.raises(TypeError, match="depth must not be a masked array"):
+        replace(observation, depth=masked)
+
+
 @pytest.mark.parametrize("field", ["K_R", "K_D", "T_RD", "T_WC_D"])
 def test_matrices_require_float64_numpy_arrays(
     calibration: Calibration, observation: Observation, field: str
@@ -203,36 +243,26 @@ def test_exact_homogeneous_last_row(
 
 @pytest.mark.parametrize("field", ["T_RD", "T_WC_D"])
 @pytest.mark.parametrize(
-    ("rotation", "message"),
+    "rotation",
     [
-        (np.diag([1.0, 1.0, -1.0]), "determinant"),
-        (np.diag([1.0, 1.0, 2.0]), "orthonormal"),
-        (np.array([[1.0, 0.1, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]), "orthonormal"),
-        (np.eye(3) * (1.0 + 2e-6), "orthonormal"),
-        (np.eye(3) * (1.0 + 4e-7), "determinant"),
+        np.diag([1.0, 1.0, -1.0]),
+        np.diag([1.0, 1.0, 2.0]),
+        np.array([[1.0, 0.1, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+        np.eye(3) * (1.0 + 2e-6),
+        np.eye(3) * (1.0 + 4e-7),
+        np.eye(3) * (1.0 + 2e-7),
+        np.zeros((3, 3)),
     ],
 )
-def test_transform_rotation_must_be_proper_and_within_tolerance(
+def test_transform_rotation_is_preserved_without_quality_checks(
     calibration: Calibration,
     observation: Observation,
     field: str,
     rotation: np.ndarray,
-    message: str,
 ) -> None:
     owner = observation if field == "T_WC_D" else calibration
     matrix = np.eye(4)
     matrix[:3, :3] = rotation
-    with pytest.raises(ValueError, match=message):
-        replace(owner, **{field: matrix})
-
-
-@pytest.mark.parametrize("field", ["T_RD", "T_WC_D"])
-def test_rotation_tolerance_accepts_small_numerical_error_without_modification(
-    calibration: Calibration, observation: Observation, field: str
-) -> None:
-    owner = observation if field == "T_WC_D" else calibration
-    matrix = np.eye(4)
-    matrix[:3, :3] *= 1.0 + 2e-7
     original = matrix.copy()
 
     result = replace(owner, **{field: matrix})
