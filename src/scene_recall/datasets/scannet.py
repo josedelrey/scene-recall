@@ -1,4 +1,4 @@
-"""Single-frame extraction for processed ScanNet v2 RGB-D captures.
+"""Sequential reading for processed ScanNet v2 RGB-D captures.
 
 Binary field order follows the official ScanNet SensReader implementation:
 https://github.com/ScanNet/ScanNet/blob/master/SensReader/python/SensorData.py
@@ -6,7 +6,7 @@ Registered-view calibration follows the official processing pipeline:
 https://github.com/ScanNet/ScanNet/blob/master/Calibrate/src/calibration.h
 
 This independently written Python 3 reader supports only version 4, JPEG color,
-and zlib uint16 depth. It reads one frame and seeks past preceding payloads.
+and zlib uint16 depth. Source IO is separate from materialized canonical data.
 """
 
 import struct
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from os import fstat
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Self
 
 import numpy as np
 from PIL import Image
@@ -58,77 +58,67 @@ def _read_matrix(stream: BinaryIO, file_size: int) -> np.ndarray:
     return np.frombuffer(_read_exact(stream, 64, file_size), dtype="<f4").reshape(4, 4)
 
 
-def _read_sens_frame(path: Path, source_index: int) -> tuple[_SensHeader, _SensFrame]:
-    """Extract native fields without decoding images or interpreting geometry."""
-    with path.open("rb") as stream:
-        file_size = fstat(stream.fileno()).st_size
-        version = struct.unpack("<I", _read_exact(stream, 4, file_size))[0]
-        if version != 4:
-            raise ValueError(f"unsupported .sens version {version}, expected 4")
-        name_size = struct.unpack("<Q", _read_exact(stream, 8, file_size))[0]
-        try:
-            sensor_name = _read_exact(stream, name_size, file_size).decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise ValueError("invalid .sens sensor name encoding") from error
-        intrinsic_color = _read_matrix(stream, file_size)
-        extrinsic_color = _read_matrix(stream, file_size)
-        intrinsic_depth = _read_matrix(stream, file_size)
-        extrinsic_depth = _read_matrix(stream, file_size)
-        color_compression, depth_compression = struct.unpack(
-            "<ii", _read_exact(stream, 8, file_size)
-        )
-        if (color_compression, depth_compression) != (2, 1):
-            raise ValueError(
-                "unsupported .sens compression: require JPEG and zlib uint16"
-            )
-        color_width, color_height, depth_width, depth_height = struct.unpack(
-            "<4I", _read_exact(stream, 16, file_size)
-        )
-        depth_shift = struct.unpack("<f", _read_exact(stream, 4, file_size))[0]
-        frame_count = struct.unpack("<Q", _read_exact(stream, 8, file_size))[0]
-        if source_index >= frame_count:
-            raise IndexError(
-                f"source frame index {source_index} outside {frame_count} frames"
-            )
-        if frame_count > (file_size - stream.tell()) // 96:
-            raise ValueError("truncated .sens file: declared frame headers cannot fit")
-        header = _SensHeader(
-            sensor_name,
-            intrinsic_color,
-            extrinsic_color,
-            intrinsic_depth,
-            extrinsic_depth,
-            (color_height, color_width),
-            (depth_height, depth_width),
-            depth_shift,
-            frame_count,
-        )
-        for index in range(source_index + 1):
-            camera_to_world = _read_matrix(stream, file_size)
-            timestamp_color, timestamp_depth, color_size, depth_size = struct.unpack(
-                "<4Q", _read_exact(stream, 32, file_size)
-            )
-            if color_size == 0 or depth_size == 0:
-                raise ValueError(
-                    "malformed .sens frame: RGB and depth payloads are required"
-                )
-            frame_end = stream.tell() + color_size + depth_size
-            if frame_end > file_size:
-                raise ValueError(
-                    "truncated .sens file: frame payload exceeds remaining bytes"
-                )
-            if index < source_index:
-                stream.seek(frame_end)
-                continue
-            frame = _SensFrame(
-                camera_to_world,
-                timestamp_color,
-                timestamp_depth,
-                _read_exact(stream, color_size, file_size),
-                _read_exact(stream, depth_size, file_size),
-            )
-            return header, frame
-    raise AssertionError("validated source index must select a frame")
+def _read_sens_header(stream: BinaryIO, file_size: int) -> _SensHeader:
+    version = struct.unpack("<I", _read_exact(stream, 4, file_size))[0]
+    if version != 4:
+        raise ValueError(f"unsupported .sens version {version}, expected 4")
+    name_size = struct.unpack("<Q", _read_exact(stream, 8, file_size))[0]
+    try:
+        sensor_name = _read_exact(stream, name_size, file_size).decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("invalid .sens sensor name encoding") from error
+    intrinsic_color = _read_matrix(stream, file_size)
+    extrinsic_color = _read_matrix(stream, file_size)
+    intrinsic_depth = _read_matrix(stream, file_size)
+    extrinsic_depth = _read_matrix(stream, file_size)
+    color_compression, depth_compression = struct.unpack(
+        "<ii", _read_exact(stream, 8, file_size)
+    )
+    if (color_compression, depth_compression) != (2, 1):
+        raise ValueError("unsupported .sens compression: require JPEG and zlib uint16")
+    color_width, color_height, depth_width, depth_height = struct.unpack(
+        "<4I", _read_exact(stream, 16, file_size)
+    )
+    depth_shift = struct.unpack("<f", _read_exact(stream, 4, file_size))[0]
+    frame_count = struct.unpack("<Q", _read_exact(stream, 8, file_size))[0]
+    if frame_count > (file_size - stream.tell()) // 96:
+        raise ValueError("truncated .sens file: declared frame headers cannot fit")
+    return _SensHeader(
+        sensor_name,
+        intrinsic_color,
+        extrinsic_color,
+        intrinsic_depth,
+        extrinsic_depth,
+        (color_height, color_width),
+        (depth_height, depth_width),
+        depth_shift,
+        frame_count,
+    )
+
+
+def _read_sens_frame(
+    stream: BinaryIO, file_size: int, *, read_payloads: bool
+) -> _SensFrame | None:
+    """Read the next record, seeking past payloads when it is not selected."""
+    camera_to_world = _read_matrix(stream, file_size)
+    timestamp_color, timestamp_depth, color_size, depth_size = struct.unpack(
+        "<4Q", _read_exact(stream, 32, file_size)
+    )
+    if color_size == 0 or depth_size == 0:
+        raise ValueError("malformed .sens frame: RGB and depth payloads are required")
+    frame_end = stream.tell() + color_size + depth_size
+    if frame_end > file_size:
+        raise ValueError("truncated .sens file: frame payload exceeds remaining bytes")
+    if not read_payloads:
+        stream.seek(frame_end)
+        return None
+    return _SensFrame(
+        camera_to_world,
+        timestamp_color,
+        timestamp_depth,
+        _read_exact(stream, color_size, file_size),
+        _read_exact(stream, depth_size, file_size),
+    )
 
 
 def _registered_calibration(header: _SensHeader) -> Calibration:
@@ -214,46 +204,17 @@ def _decode_depth(data: bytes, header: _SensHeader) -> np.ndarray:
     return depth
 
 
-def load_scannet_frame(
-    sens_path: str | Path, original_frame_index: int = 0
-) -> Sequence:
-    """Return one canonical observation from a processed ScanNet v2 .sens file.
-
-    Only version 4 JPEG/zlib captures labeled ``StructureSensor (calibrated)``
-    with identity extrinsics and the pipeline's registered intrinsic relationship
-    are accepted. Native grids are preserved. C_D and C_R both refer to the
-    registered color optical frame, and W is the stored reconstruction world.
-    The companion .txt file is never read.
-
-    ``original_frame_index`` is the zero-based position in the source stream.
-    The returned observation has canonical frame_index=0, with the source index
-    and raw timestamps retained in provenance. Nonzero depth timestamps are
-    interpreted as microseconds on the source clock. Zero means unavailable.
-    RGB and depth are associated by their source frame record.
-
-    The all-negative-infinity lost-tracking pose sentinel becomes None with a
-    provenance reason. Finite poses with a homogeneous last row are preserved
-    as stored, apart from conversion to float64. Rotation quality is not checked,
-    and poses are never repaired or projected to SO(3).
-    Invalid indices raise TypeError or IndexError. Unsupported or malformed
-    source data raises ValueError. Filesystem errors propagate as OSError.
-
-    Only preceding records and the selected record are inspected. Subsequent
-    frames and the optional IMU stream are outside this extraction's scope.
-    """
-    if not isinstance(original_frame_index, int) or isinstance(
-        original_frame_index, bool
-    ):
-        raise TypeError("original_frame_index must be a Python integer")
-    if original_frame_index < 0:
-        raise IndexError("original_frame_index must be nonnegative")
-    path = Path(sens_path).expanduser()
-    header, frame = _read_sens_frame(path, original_frame_index)
-    calibration = _registered_calibration(header)
+def _canonical_observation(
+    path: Path,
+    header: _SensHeader,
+    frame: _SensFrame,
+    source_index: int,
+    frame_index: int,
+) -> Observation:
     provenance = {
         "dataset": "scannet_v2",
         "source_file": str(path),
-        "original_frame_index": original_frame_index,
+        "original_frame_index": source_index,
         "sensor_name": header.sensor_name,
         "sens_version": 4,
         "source_frame_count": header.frame_count,
@@ -274,12 +235,157 @@ def load_scannet_frame(
     timestamp = frame.timestamp_depth / 1_000_000 if frame.timestamp_depth else None
     if timestamp is None:
         provenance["timestamp_unavailable_reason"] = "source depth timestamp is zero"
-    observation = Observation(
-        frame_index=0,
+    return Observation(
+        frame_index=frame_index,
         rgb=_decode_rgb(frame.color_data, header.rgb_shape),
         depth=_decode_depth(frame.depth_data, header),
         timestamp=timestamp,
         T_WC_D=pose,
         provenance=provenance,
     )
-    return Sequence(path.stem, calibration, (observation,))
+
+
+def _validate_source_index(name: str, index: int) -> None:
+    if not isinstance(index, int) or isinstance(index, bool):
+        raise TypeError(f"{name} must be a Python integer")
+    if index < 0:
+        raise IndexError(f"{name} must be nonnegative")
+
+
+class ScanNetReader:
+    """Read canonical observations sequentially from one open .sens file.
+
+    Construction opens the file and validates its header and registered
+    calibration. Use as a context manager to close on early termination, or
+    call close(). Exhaustion and read/decode/validation errors close the file.
+    Iteration is single-pass and retains no previously emitted observations.
+
+    The selected source range is [start, stop), with stop=None meaning the
+    declared frame count. Bounds must satisfy 0 <= start <= stop <= frame_count.
+    Empty ranges are allowed. Observation frame indices start at zero within
+    this range, and original source indices remain in provenance. Preceding
+    record headers are checked once and their payloads are skipped without
+    decoding. Records at or after stop and the optional IMU stream are unread.
+
+    Only version 4 JPEG/zlib captures labeled ``StructureSensor (calibrated)``
+    with identity extrinsics and the pipeline's registered intrinsic relationship
+    are accepted. Native grids are preserved. C_D and C_R both refer to the
+    registered color optical frame, and W is the stored reconstruction world.
+    The companion .txt file is never read.
+
+    Nonzero depth timestamps are microseconds on the source clock. Zero means
+    unavailable. RGB and depth are associated by their source frame record.
+    The all-negative-infinity lost-tracking pose becomes None with a provenance
+    reason. Other poses undergo canonical structural validation and float64
+    conversion without rotation-quality checks, repair, or projection to SO(3).
+
+    Invalid bounds raise TypeError or IndexError. Unsupported or malformed
+    source data raises ValueError. Filesystem errors propagate as OSError.
+    """
+
+    def __init__(
+        self, sens_path: str | Path, *, start: int = 0, stop: int | None = None
+    ) -> None:
+        _validate_source_index("start", start)
+        if stop is not None:
+            _validate_source_index("stop", stop)
+            if stop < start:
+                raise IndexError("stop must be greater than or equal to start")
+        self._path = Path(sens_path).expanduser()
+        self._stream = self._path.open("rb")
+        try:
+            self._file_size = fstat(self._stream.fileno()).st_size
+            self._header = _read_sens_header(self._stream, self._file_size)
+            self._stop = self._header.frame_count if stop is None else stop
+            if (
+                start > self._header.frame_count
+                or self._stop > self._header.frame_count
+            ):
+                raise IndexError(
+                    f"source range [{start}, {self._stop}) outside "
+                    f"{self._header.frame_count} frames"
+                )
+            self.calibration = _registered_calibration(self._header)
+            self.sequence_id = self._path.stem
+            self.frame_count = self._header.frame_count
+            self._start = start
+            self._source_index = 0
+        except BaseException:
+            self.close()
+            raise
+
+    @property
+    def closed(self) -> bool:
+        """Whether the source file has been closed."""
+        return self._stream.closed
+
+    def close(self) -> None:
+        """Close the source file. Calling this repeatedly is safe."""
+        self._stream.close()
+
+    def __enter__(self) -> Self:
+        if self.closed:
+            raise ValueError("ScanNetReader is closed")
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
+
+    def __iter__(self) -> Self:
+        return self
+
+    def __next__(self) -> Observation:
+        if self.closed:
+            raise StopIteration
+        if self._start == self._stop or self._source_index >= self._stop:
+            self.close()
+            raise StopIteration
+        try:
+            while self._source_index < self._start:
+                _read_sens_frame(self._stream, self._file_size, read_payloads=False)
+                self._source_index += 1
+            frame = _read_sens_frame(self._stream, self._file_size, read_payloads=True)
+            assert frame is not None
+            observation = _canonical_observation(
+                self._path,
+                self._header,
+                frame,
+                self._source_index,
+                self._source_index - self._start,
+            )
+            self._source_index += 1
+            if self._source_index == self._stop:
+                self.close()
+            return observation
+        except BaseException:
+            self.close()
+            raise
+
+
+def load_scannet_sequence(
+    sens_path: str | Path, *, start: int = 0, stop: int | None = None
+) -> Sequence:
+    """Materialize [start, stop) as canonical data using ScanNetReader.
+
+    stop=None loads all remaining frames. Memory grows with the selected range.
+    Observations have contiguous zero-based frame indices, and provenance keeps
+    original source indices. An empty range returns an empty Sequence with the
+    source calibration. See ScanNetReader for supported data and validation.
+    """
+    with ScanNetReader(sens_path, start=start, stop=stop) as reader:
+        return Sequence(reader.sequence_id, reader.calibration, tuple(reader))
+
+
+def load_scannet_frame(
+    sens_path: str | Path, original_frame_index: int = 0
+) -> Sequence:
+    """Materialize one source frame as a one-observation canonical Sequence.
+
+    The observation has frame_index=0, with the original index in provenance.
+    Preceding payloads are skipped. Later records and the IMU stream are unread.
+    See ScanNetReader for supported data, canonical semantics, and validation.
+    """
+    _validate_source_index("original_frame_index", original_frame_index)
+    return load_scannet_sequence(
+        sens_path, start=original_frame_index, stop=original_frame_index + 1
+    )

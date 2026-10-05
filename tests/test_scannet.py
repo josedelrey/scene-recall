@@ -8,7 +8,11 @@ import pytest
 from PIL import Image
 
 from scene_recall.data import Sequence
-from scene_recall.datasets.scannet import load_scannet_frame
+from scene_recall.datasets.scannet import (
+    ScanNetReader,
+    load_scannet_frame,
+    load_scannet_sequence,
+)
 from scene_recall.geometry.camera import backproject_depth, transform_points
 
 K_COLOR = np.array([[8, 0, 3.5], [0, 9, 2.5], [0, 0, 1]], dtype=np.float32)
@@ -36,7 +40,7 @@ def _jpeg(color: tuple[int, int, int], format: str = "JPEG") -> bytes:
 def sens_factory(tmp_path: Path):
     """Write tiny little-endian version-4 captures without external data."""
 
-    def write(header_changes=None, frame_changes=None):
+    def write(header_changes=None, frame_changes=None, *, frame_count=2):
         header = {
             "version": 4,
             "sensor_name": b"StructureSensor (calibrated)",
@@ -47,7 +51,7 @@ def sens_factory(tmp_path: Path):
             "compression": (2, 1),
             "dimensions": (8, 6, 4, 3),
             "depth_shift": 1000.0,
-            "frame_count": 2,
+            "frame_count": frame_count,
         }
         header.update(header_changes or {})
         frames = [
@@ -64,6 +68,11 @@ def sens_factory(tmp_path: Path):
                 "depth": zlib.compress(np.full((3, 4), 2000, dtype="<u2").tobytes()),
             },
         ]
+        frames.extend(
+            dict(frames[1], timestamps=(index * 1_000_000 - 1000, index * 1_000_000))
+            for index in range(2, frame_count)
+        )
+        frames = frames[:frame_count]
         for index, changes in (frame_changes or {}).items():
             frames[index].update(changes)
         output = BytesIO()
@@ -361,3 +370,215 @@ def test_companion_metadata_is_not_used(sens_factory) -> None:
     sequence = load_scannet_frame(path)
     np.testing.assert_array_equal(sequence.calibration.T_RD, np.eye(4))
     np.testing.assert_array_equal(sequence.observations[0].T_WC_D, POSE)
+
+
+def test_reader_is_lazy_and_reads_long_sequence_once(sens_factory, monkeypatch) -> None:
+    path = sens_factory(frame_count=32)
+    file_size = path.stat().st_size
+
+    class CountingReader(BufferedReader):
+        bytes_read = 0
+
+        def read(self, size=-1):
+            assert size >= 0
+            assert self.tell() == self.bytes_read
+            data = super().read(size)
+            self.bytes_read += len(data)
+            return data
+
+        def seek(self, *args):
+            pytest.fail("full sequential iteration must not seek")
+
+    stream = CountingReader(FileIO(path, "rb"))
+    opens = []
+
+    def open_source(self, mode):
+        opens.append(self)
+        return stream
+
+    monkeypatch.setattr(Path, "open", open_source)
+    with ScanNetReader(path) as reader:
+        assert iter(reader) is reader
+        assert reader.frame_count == 32
+        assert reader.sequence_id == path.stem
+        assert stream.bytes_read < 1000
+        first = next(reader)
+        first_rgb = first.rgb.copy()
+        first_depth = first.depth.copy()
+        assert stream.bytes_read < file_size / 4
+        assert not reader.closed
+        for index, observation in enumerate(reader, start=1):
+            assert observation.frame_index == index
+            assert observation.provenance["original_frame_index"] == index
+        assert index == 31
+        assert reader.closed
+        assert stream.bytes_read == file_size - 8  # The IMU count remains unread.
+        assert list(reader) == []
+    assert opens == [path]
+    np.testing.assert_array_equal(first.rgb, first_rgb)
+    np.testing.assert_array_equal(first.depth, first_depth)
+
+
+def test_range_preserves_canonical_semantics_and_source_provenance(
+    sens_factory,
+) -> None:
+    pose = POSE.copy()
+    pose[2, 2] = 1.000002
+    path = sens_factory(
+        frame_count=4,
+        frame_changes={
+            0: {"color": b"not JPEG", "depth": b"not zlib"},
+            1: {"pose": pose},
+            2: {"pose": np.full((4, 4), -np.inf), "timestamps": (123456, 0)},
+            3: {"color": b"", "depth": b""},
+        },
+    )
+    sequence = load_scannet_sequence(path, start=1, stop=3)
+    assert sequence.sequence_id == path.stem
+    np.testing.assert_array_equal(sequence.calibration.K_R, K_COLOR)
+    np.testing.assert_array_equal(sequence.calibration.K_D, K_DEPTH)
+    np.testing.assert_array_equal(sequence.calibration.T_RD, np.eye(4))
+    assert [view.frame_index for view in sequence.observations] == [0, 1]
+    first, second = sequence.observations
+    assert first.timestamp == 2.5
+    assert second.timestamp is None
+    assert second.T_WC_D is None
+    assert second.provenance["pose_unavailable_reason"]
+    assert second.provenance["timestamp_unavailable_reason"]
+    assert second.provenance["timestamp_color"] == 123456
+    assert first.T_WC_D.dtype == np.float64
+    np.testing.assert_array_equal(first.T_WC_D, pose.astype(np.float64))
+    for source_index, view in enumerate(sequence.observations, start=1):
+        assert view.rgb.dtype == np.uint8
+        assert view.depth.dtype == np.float32
+        np.testing.assert_allclose(view.rgb[0, 0], [20, 210, 60], atol=2)
+        np.testing.assert_array_equal(view.depth, np.full((3, 4), 2.0))
+        assert view.provenance["original_frame_index"] == source_index
+        assert view.provenance["source_frame_count"] == 4
+        assert view.provenance["source_file"] == str(path)
+        assert view.provenance["timestamp_unit"] == "microseconds"
+
+
+@pytest.mark.parametrize("start", [0, 1])
+def test_materialization_to_end(sens_factory, start) -> None:
+    sequence = load_scannet_sequence(sens_factory(), start=start)
+    assert len(sequence.observations) == 2 - start
+    assert [view.frame_index for view in sequence.observations] == list(
+        range(2 - start)
+    )
+    assert [
+        view.provenance["original_frame_index"] for view in sequence.observations
+    ] == (list(range(start, 2)))
+
+
+@pytest.mark.parametrize("start, stop", [(0, 0), (1, 1), (2, None), (2, 2)])
+def test_empty_ranges_do_not_read_frames(sens_factory, start, stop) -> None:
+    path = sens_factory(frame_changes={0: {"color": b"", "depth": b""}})
+    sequence = load_scannet_sequence(path, start=start, stop=stop)
+    assert sequence.observations == ()
+    np.testing.assert_array_equal(sequence.calibration.T_RD, np.eye(4))
+
+
+def test_reader_supports_empty_capture(sens_factory) -> None:
+    path = sens_factory(frame_count=0)
+    assert load_scannet_sequence(path).observations == ()
+    with ScanNetReader(path) as reader:
+        assert reader.frame_count == 0
+        assert list(reader) == []
+        assert reader.closed
+
+
+@pytest.mark.parametrize("bound", ["start", "stop"])
+@pytest.mark.parametrize("value", [True, 1.0, "0", np.int64(0)])
+def test_range_bound_types(sens_factory, bound, value) -> None:
+    with pytest.raises(TypeError, match=bound):
+        load_scannet_sequence(sens_factory(), **{bound: value})
+
+
+@pytest.mark.parametrize(
+    "bounds",
+    [
+        {"start": -1},
+        {"stop": -1},
+        {"start": 1, "stop": 0},
+        {"start": 3},
+        {"stop": 3},
+    ],
+)
+def test_invalid_ranges(sens_factory, bounds) -> None:
+    with pytest.raises(IndexError):
+        load_scannet_sequence(sens_factory(), **bounds)
+
+
+def test_reader_closes_on_early_exit_and_explicit_close(sens_factory) -> None:
+    path = sens_factory()
+    with ScanNetReader(path) as reader:
+        next(reader)
+        assert not reader.closed
+    assert reader.closed
+    assert next(reader, None) is None
+    reader.close()
+    with pytest.raises(ValueError, match="closed"), reader:
+        pass
+
+    reader = ScanNetReader(path)
+    reader.close()
+    reader.close()
+    assert next(reader, None) is None
+
+
+def test_reader_closes_on_consumer_error(sens_factory) -> None:
+    with (
+        pytest.raises(RuntimeError, match="consumer failed"),
+        ScanNetReader(sens_factory()) as reader,
+    ):
+        next(reader)
+        raise RuntimeError("consumer failed")
+    assert reader.closed
+
+
+@pytest.mark.parametrize(
+    "changes, message",
+    [
+        ({"color": b"broken"}, "JPEG"),
+        ({"depth": b"broken"}, "zlib"),
+        ({"pose": np.full((4, 4), np.nan)}, "finite"),
+        ({"color": b""}, "payloads are required"),
+    ],
+)
+def test_reader_closes_when_later_frame_fails(sens_factory, changes, message) -> None:
+    with ScanNetReader(sens_factory(frame_changes={1: changes})) as reader:
+        assert next(reader).frame_index == 0
+        with pytest.raises(ValueError, match=message):
+            next(reader)
+        assert reader.closed
+        assert next(reader, None) is None
+
+
+def test_reader_closes_on_truncated_later_record(sens_factory) -> None:
+    path = sens_factory()
+    path.write_bytes(path.read_bytes()[:-20])
+    with ScanNetReader(path) as reader:
+        next(reader)
+        with pytest.raises(ValueError, match="truncated"):
+            next(reader)
+        assert reader.closed
+
+
+@pytest.mark.parametrize(
+    "header_changes, bounds, message",
+    [
+        ({"version": 3}, {}, "unsupported"),
+        ({"sensor_name": b"OtherSensor"}, {}, "unsupported calibration"),
+        ({}, {"stop": 3}, "outside"),
+    ],
+)
+def test_reader_closes_on_initialization_failure(
+    sens_factory, monkeypatch, header_changes, bounds, message
+) -> None:
+    path = sens_factory(header_changes=header_changes)
+    stream = path.open("rb")
+    monkeypatch.setattr(Path, "open", lambda self, mode: stream)
+    with pytest.raises((ValueError, IndexError), match=message):
+        ScanNetReader(path, **bounds)
+    assert stream.closed

@@ -1,6 +1,53 @@
-# ScanNet frame extraction and point-cloud export
+# ScanNet reading and point-cloud export
 
-## Frame extraction
+## Sequential reading
+
+Use `ScanNetReader` to process a long capture one observation at a time:
+
+```python
+from scene_recall.datasets.scannet import ScanNetReader
+
+with ScanNetReader("/path/to/scene0000_00.sens") as reader:
+    calibration = reader.calibration
+    for observation in reader:
+        print(observation.frame_index, observation.timestamp)
+```
+
+Construction opens one file and validates its header and shared calibration.
+Iteration reads and decodes each selected record on demand, in order, without
+reopening or rescanning the file. The reader retains no emitted observations.
+Memory use stays bounded by the current frame unless the consumer retains data.
+`reader.sequence_id` identifies the capture, and `reader.frame_count` is the
+declared total source frame count.
+
+The reader is a single-pass iterator. Calling `iter(reader)` continues its
+current position. Open a new reader to replay the source. Use the context manager
+for early exits, or call `close()` explicitly. The file also closes on exhaustion
+and parsing, decoding, or canonical validation errors. Iterating a closed reader
+produces no more observations.
+
+## Materialized ranges and single frames
+
+Materialize a bounded source range into the existing canonical `Sequence`:
+
+```python
+from scene_recall.datasets.scannet import load_scannet_sequence
+
+sequence = load_scannet_sequence("/path/to/scene0000_00.sens", start=100, stop=200)
+```
+
+Both `ScanNetReader` and `load_scannet_sequence` accept the half-open range
+`[start, stop)`, with `start=0` and `stop=None` by default. `None` selects through
+the declared end of the capture. Bounds must be Python integers satisfying
+`0 <= start <= stop <= frame_count`. Booleans are rejected. Invalid bound types
+raise `TypeError`, and invalid ranges raise `IndexError`. Empty ranges are valid
+and materialize as an empty `Sequence` with the source calibration.
+
+Observation `frame_index` starts at zero within the selected range.
+`provenance["original_frame_index"]` retains the position in the source, and
+`provenance["source_frame_count"]` retains the total source frame count.
+`Sequence` contains a materialized tuple and owns no source IO. Its memory use
+grows with the selected range. Omitting `stop` can materialize the whole capture.
 
 Load one original frame from a processed ScanNet v2 capture:
 
@@ -14,19 +61,34 @@ sequence = load_scannet_frame(
 observation = sequence.observations[0]
 ```
 
+`load_scannet_frame` uses the same reader to materialize a one-frame range. It
+retains its existing single-frame API and returns canonical frame index 0.
+
+Preceding records have their headers and payload bounds checked once, while
+their compressed payloads are skipped without reading or decoding. Records at or
+after `stop` and the optional IMU stream are unread. Errors in selected frames
+surface when those frames are consumed. Filesystem errors propagate as `OSError`.
+
+## Canonical semantics
+
 The adapter supports version 4 with JPEG color and zlib uint16 depth. It verifies
 the expected calibrated StructureSensor registration and preserves the native
 image grids. Its output follows the [RGB-D data contract](data_contract.md).
 
-Preceding frame payloads are skipped. The original index and raw timestamps are
-recorded in provenance, while the one-observation sequence has canonical frame
-index 0.
-Zero depth timestamps are unavailable. Finite stored reference poses with an
-exact homogeneous last row `[0, 0, 0, 1]` are preserved apart from conversion to
-`float64`. Rotation quality is not checked, and poses are never repaired or
+RGB and depth remain associated by source record. Depth is float32 z-depth in
+meters, with source zero values converted to `NaN`. RGB is uint8 in RGB channel
+order. Both canonical optical frames refer to the registered color optical
+frame, so `T_RD` is identity despite different image grids. The world frame is
+the stored reconstruction world. Companion `.txt` metadata is never read.
+
+Raw timestamps are recorded in provenance. Nonzero depth timestamps become
+seconds from source microseconds, and zero depth timestamps are unavailable.
+Finite stored reference poses with an exact homogeneous last row
+`[0, 0, 0, 1]` are preserved apart from conversion to `float64`.
+Rotation quality is not checked, and poses are never repaired or
 projected to $SO(3)$. The all-`-inf` tracking sentinel becomes `None` with a
 provenance reason. Other nonfinite poses and malformed homogeneous rows are
-rejected. See `load_scannet_frame`'s docstring for supported calibration and errors.
+rejected. See `ScanNetReader`'s docstring for supported calibration and errors.
 
 ## Frame 0 point-cloud export
 

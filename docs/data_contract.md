@@ -12,6 +12,8 @@ Dataset adapters are the boundary between dataset-specific formats and SceneReca
 
 An observation may also carry a timestamp, a reference pose, and provenance. `frame_index` is zero-based and contiguous within its sequence. The optional timestamp is a `float64` number of seconds and refers to the depth view. The adapter associates the RGB view with that depth view before producing the observation.
 
+`Sequence` is materialized canonical data with a tuple of observations. Source files, reader lifetimes, and sequential IO belong to dataset adapters. A reader can yield canonical observations incrementally and materialize a bounded range as a `Sequence`, with frame indices rebased to zero and source indices retained in provenance.
+
 ## Canonical views and frames
 
 | View | Array contract | Optical frame |
