@@ -139,8 +139,47 @@ Missing descriptors produce zero matches and a retention ratio of zero.
 
 Diagnostics report keypoint counts, KNN query-row count, accepted matches, and
 retention as accepted matches divided by KNN query rows. A capture must contain
-at least two frames. The experiment uses only RGB from the reader's observations.
-Depth association and pose estimation are outside its scope.
+at least two frames.
+
+Accepted frame-0 RGB pixels are backprojected with frame-0 z-depth using the
+registered grids' `K_R` and `K_D`. Invalid depth removes the same row from both
+pixel arrays and the 3D array. The remaining `points_C0` are float64 XYZ in
+camera frame C0, in meters. Reprojecting them through `K_R` must recover their
+frame-0 RGB pixels. Diagnostics also report depth-valid count and retention.
+
+The experiment passes `points_C0`, the aligned frame-1 RGB `pixels_1`, and `K_R`
+to OpenCV `solvePnPRansac`. This classical baseline uses `SOLVEPNP_EPNP`, a 3 px
+reprojection threshold, 100 iterations, confidence 0.99, and `distCoeffs=None`.
+It requires at least five correspondences to retain EPNP, since
+[OpenCV switches to P3P with exactly four inputs](https://docs.opencv.org/4.12.0/d9/d0c/group__calib3d.html).
+The returned rotation vector and translation form `T_C1C0`, mapping C0 into C1:
+`points_C1 = points_C0 @ T_C1C0[:3, :3].T + T_C1C0[:3, 3]`.
+
+Diagnostics report the correspondence count, RANSAC inlier count, inlier ratio,
+estimated transform, and mean, median, RMSE, and maximum inlier reprojection
+error in pixels. Errors use the final returned pose and OpenCV's returned
+inlier indices. The final EPNP fit can move some returned inliers beyond the
+3 px RANSAC threshold. No additional refinement or inlier filtering is applied.
+Insufficient correspondences or a failed solver produce an explicit diagnostic
+and preserve the correspondence and visualization outputs without an estimate.
+
+After estimation, available ScanNet reference poses supply
+`T_C1C0_gt = inv(T_WC1) @ T_WC0`. The canonical `T_WC_D` poses apply here because
+ScanNet's registered depth and RGB optical frames coincide. Diagnostics print
+the estimated translation, raw GT translation, and their vector difference
+norm in meters. Missing reference poses or a singular frame-1 reference pose
+make the GT comparison unavailable without discarding the estimate.
+
+Rotation comparison is local to this experiment. The raw relative GT rotation
+is preserved and its Frobenius difference from the estimate is always reported
+when GT is available. An angular error is reported only if `R_gt.T @ R_gt` is
+within absolute tolerance `1e-4` of identity and `det(R_gt)` is within `1e-4`
+of +1, both with zero relative tolerance. The angle in degrees is
+`acos(clip((trace(R_est @ R_gt.T) - 1) / 2, -1, 1))`. Small departures from
+rigidity within this tolerance make the angle approximate. When the checks
+fail, the angle is explicitly unavailable while the translation comparison
+remains available. Reference rotations are never repaired, and the canonical
+data contract's transform validation policy is unchanged.
 
 Outputs default to the ignored `outputs/` directory, adjustable with
 `--output-dir`:
@@ -149,9 +188,17 @@ Outputs default to the ignored `outputs/` directory, adjustable with
   the left and frame 1 on the right. RGB colors are preserved.
 - `<sequence_id>_frames0_1_sift.npz` contains float32 arrays `pixels_0` and
   `pixels_1`, both shaped `(N, 2)` with `(x, y)` coordinates in each frame's
-  native RGB grid. Row `i` in each array is the same accepted match. Empty
-  results have shape `(0, 2)`. Matches remain directed from frame 0 to frame 1,
-  and multiple frame 0 features can match the same frame 1 feature.
+  native RGB grid, plus float64 `points_C0` shaped `(N, 3)`. Row `i` in each
+  array is the same depth-valid match. Empty results have shapes `(0, 2)` and
+  `(0, 3)`. Matches remain directed from frame 0 to frame 1, and multiple
+  frame-0 features can match the same frame-1 feature.
+- The same archive includes `pose_status`, a scalar string equal to `estimated`
+  on success or a failure reason otherwise. `inlier_indices` is a flat integer
+  array indexing the saved correspondence rows, and
+  `inlier_reprojection_errors_px` is a float64 array in that inlier order.
+  These two arrays are empty when estimation is unavailable. Successful
+  estimation adds float64 `T_C1C0` shaped `(4, 4)`. A successful GT comparison
+  also adds raw float64 `T_C1C0_gt` shaped `(4, 4)`.
 
 ```python
 import numpy as np
@@ -159,6 +206,10 @@ import numpy as np
 with np.load("outputs/scene0000_00_frames0_1_sift.npz") as matches:
     pixels_0 = matches["pixels_0"]
     pixels_1 = matches["pixels_1"]
+    points_C0 = matches["points_C0"]
+    if matches["pose_status"].item() == "estimated":
+        T_C1C0 = matches["T_C1C0"]
+        inlier_indices = matches["inlier_indices"]
 ```
 
 The locked `opencv-python-headless` dependency supplies SIFT and image writing

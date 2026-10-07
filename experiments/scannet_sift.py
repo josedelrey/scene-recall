@@ -1,4 +1,4 @@
-"""Associate two-frame ScanNet SIFT matches with frame-0 depth."""
+"""Estimate the frame-0 to frame-1 ScanNet pose from depth-valid SIFT matches."""
 
 import argparse
 from pathlib import Path
@@ -8,6 +8,40 @@ import numpy as np
 
 from scene_recall.datasets.scannet import ScanNetReader
 from scene_recall.geometry.camera import backproject_rgb_pixels, project_points
+
+
+def estimate_relative_pose(
+    points_C0: np.ndarray, pixels_1: np.ndarray, K_R: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return T_C1C0, correspondence inlier indices, and inlier errors in pixels."""
+    # OpenCV switches to P3P with exactly four inputs. Keep this baseline EPNP.
+    if len(points_C0) < 5:
+        raise ValueError("EPNP RANSAC requires at least 5 correspondences")
+    success, rvec, tvec, inliers = cv2.solvePnPRansac(
+        objectPoints=np.ascontiguousarray(points_C0, dtype=np.float64),
+        imagePoints=np.ascontiguousarray(pixels_1, dtype=np.float64),
+        cameraMatrix=K_R,
+        distCoeffs=None,
+        iterationsCount=100,
+        reprojectionError=3.0,
+        confidence=0.99,
+        flags=cv2.SOLVEPNP_EPNP,
+    )
+    if not success or inliers is None or inliers.size == 0:
+        raise RuntimeError("solvePnPRansac did not return a pose with inliers")
+    if not np.isfinite(rvec).all() or not np.isfinite(tvec).all():
+        raise RuntimeError("solvePnPRansac returned a nonfinite pose")
+
+    # Object frame is C0 and the target image is C1, so no inversion is needed.
+    T_C1C0 = np.eye(4, dtype=np.float64)
+    T_C1C0[:3, :3] = cv2.Rodrigues(rvec)[0]
+    T_C1C0[:3, 3] = tvec.reshape(3)
+    inlier_indices = inliers.reshape(-1)
+    projected, _ = cv2.projectPoints(points_C0[inlier_indices], rvec, tvec, K_R, None)
+    errors = np.linalg.norm(projected.reshape(-1, 2) - pixels_1[inlier_indices], axis=1)
+    if not np.isfinite(errors).all():
+        raise RuntimeError("PnP inlier reprojection errors are nonfinite")
+    return T_C1C0, inlier_indices, errors
 
 
 def main() -> None:
@@ -22,7 +56,8 @@ def main() -> None:
     with ScanNetReader(args.sens_path, start=0, stop=2) as reader:
         frame_0 = next(reader)
         rgb_0 = frame_0.rgb
-        rgb_1 = next(reader).rgb
+        frame_1 = next(reader)
+        rgb_1 = frame_1.rgb
         calibration = reader.calibration
         sequence_id = reader.sequence_id
 
@@ -80,13 +115,88 @@ def main() -> None:
     print(f"Depth-valid retention ratio (valid / accepted): {depth_retention:.4f}")
     print("Frame-0 RGB reprojection check: passed")
 
+    results = {"points_C0": points_C0, "pixels_0": pixels_0, "pixels_1": pixels_1}
+    print(f"3D-2D correspondences: {len(points_C0)}")
+    print("PnP RANSAC: EPNP, 3 px threshold, 100 iterations, confidence 0.99")
+    try:
+        T_C1C0, inlier_indices, errors = estimate_relative_pose(
+            points_C0, pixels_1, calibration.K_R
+        )
+    except (ValueError, RuntimeError, cv2.error) as error:
+        print(f"Pose estimation unavailable: {error}")
+        print("RANSAC inliers: 0")
+        print("Inlier ratio (inliers / correspondences): 0.0000")
+        print("Inlier reprojection errors: unavailable")
+        print("GT comparison unavailable: no estimated pose")
+        results["pose_status"] = np.array(str(error))
+        results["inlier_indices"] = np.empty(0, dtype=np.int32)
+        results["inlier_reprojection_errors_px"] = np.empty(0, dtype=np.float64)
+    else:
+        results.update(
+            pose_status=np.array("estimated"),
+            T_C1C0=T_C1C0,
+            inlier_indices=inlier_indices,
+            inlier_reprojection_errors_px=errors,
+        )
+        print(f"RANSAC inliers: {len(inlier_indices)}")
+        print(
+            "Inlier ratio (inliers / correspondences): "
+            f"{len(inlier_indices) / len(points_C0):.4f}"
+        )
+        print("Estimated T_C1C0 (C0 -> C1, translation in m):")
+        print(np.array2string(T_C1C0, precision=8))
+        print(
+            "Inlier reprojection errors (px): "
+            f"mean={errors.mean():.4f}, median={np.median(errors):.4f}, "
+            f"RMSE={np.sqrt(np.mean(errors**2)):.4f}, max={errors.max():.4f}"
+        )
+        print(f"Estimated translation (m): {T_C1C0[:3, 3]}")
+
+        # ScanNet's registered C_D and C_R share the optical frame in each view.
+        T_WC0, T_WC1 = frame_0.T_WC_D, frame_1.T_WC_D
+        if T_WC0 is None or T_WC1 is None:
+            print("GT comparison unavailable: a reference pose is missing")
+        else:
+            try:
+                T_C1C0_gt = np.linalg.inv(T_WC1) @ T_WC0
+            except np.linalg.LinAlgError:
+                print("GT comparison unavailable: frame-1 reference pose is singular")
+            else:
+                results["T_C1C0_gt"] = T_C1C0_gt
+                translation_error = np.linalg.norm(T_C1C0[:3, 3] - T_C1C0_gt[:3, 3])
+                print("GT T_C1C0 = inv(T_WC1) @ T_WC0:")
+                print(np.array2string(T_C1C0_gt, precision=8))
+                print(f"GT translation (m): {T_C1C0_gt[:3, 3]}")
+                print(f"Translation-vector error norm (m): {translation_error:.6f}")
+
+                # Local diagnostic only. Preserve the raw GT without SO(3) repair.
+                R_gt = T_C1C0_gt[:3, :3]
+                R_est = T_C1C0[:3, :3]
+                print(
+                    "Rotation matrix difference (Frobenius norm, raw GT): "
+                    f"{np.linalg.norm(R_est - R_gt):.6f}"
+                )
+                rotation_atol = 1e-4
+                if np.allclose(
+                    R_gt.T @ R_gt, np.eye(3), rtol=0, atol=rotation_atol
+                ) and np.isclose(np.linalg.det(R_gt), 1, rtol=0, atol=rotation_atol):
+                    cosine = (np.trace(R_est @ R_gt.T) - 1) / 2
+                    angle_deg = np.degrees(np.arccos(np.clip(cosine, -1, 1)))
+                    print(
+                        "Rotation error (deg, raw GT accepted at atol=1e-4): "
+                        f"{angle_deg:.6f}"
+                    )
+                else:
+                    print(
+                        "Rotation angle unavailable: raw GT relative rotation fails "
+                        "orthonormality or determinant +1 check at atol=1e-4"
+                    )
+
     output_dir = args.output_dir.expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{sequence_id}_frames0_1_sift"
     coordinates_path = output_dir / f"{stem}.npz"
-    np.savez(
-        coordinates_path, points_C0=points_C0, pixels_0=pixels_0, pixels_1=pixels_1
-    )
+    np.savez(coordinates_path, **results)
 
     # OpenCV draws and writes BGR images. Keep the native RGB pixel grids.
     visualization = cv2.drawMatches(

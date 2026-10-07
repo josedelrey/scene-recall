@@ -16,7 +16,14 @@ experiment = runpy.run_path(
 
 
 def run_experiment(
-    tmp_path, monkeypatch, rgb_0, rgb_1, *, depth=None, calibration=None
+    tmp_path,
+    monkeypatch,
+    rgb_0,
+    rgb_1,
+    *,
+    depth=None,
+    calibration=None,
+    reference_poses=(None, None),
 ):
     if depth is None:
         depth = np.full(rgb_0.shape[:2], 2.0, dtype=np.float32)
@@ -36,7 +43,10 @@ def run_experiment(
             assert (start, stop) == (0, 2)
             self.calibration = calibration
             self.frames = iter(
-                [SimpleNamespace(rgb=rgb_0, depth=depth), SimpleNamespace(rgb=rgb_1)]
+                [
+                    SimpleNamespace(rgb=rgb_0, depth=depth, T_WC_D=reference_poses[0]),
+                    SimpleNamespace(rgb=rgb_1, T_WC_D=reference_poses[1]),
+                ]
             )
             self.closed = False
 
@@ -275,3 +285,227 @@ def test_experiment_checks_frame_0_rgb_reprojection(tmp_path, monkeypatch) -> No
 
     with pytest.raises(RuntimeError, match="Frame-0 RGB reprojection check failed"):
         run_experiment(tmp_path, monkeypatch, rgb, rgb)
+
+
+@pytest.fixture
+def pose_correspondences():
+    rng = np.random.default_rng(7)
+    K_R = np.array([[180, 0, 127.5], [0, 175, 95.5], [0, 0, 1]], dtype=np.float64)
+    u, v = np.meshgrid(np.arange(30, 230, 25), np.arange(30, 170, 20))
+    pixels_0 = np.column_stack((u.ravel(), v.ravel())).astype(np.float32)
+    depths = rng.uniform(1.5, 4, len(pixels_0)).astype(np.float32)
+    points_C0 = (
+        np.column_stack((pixels_0, np.ones(len(pixels_0)))) @ np.linalg.inv(K_R).T
+    )
+    points_C0 *= depths[:, None]
+    T_C1C0 = np.eye(4)
+    T_C1C0[:3, :3] = cv2.Rodrigues(np.array([0.025, -0.04, 0.012]))[0]
+    T_C1C0[:3, 3] = [0.08, -0.025, 0.05]
+    points_C1 = points_C0 @ T_C1C0[:3, :3].T + T_C1C0[:3, 3]
+    pixels_1 = project_points(points_C1, K_R)
+    pixels_1 += rng.normal(0, 0.08, pixels_1.shape)
+    pixels_1[-12:] += [35, -25]
+    return points_C0, pixels_0, pixels_1.astype(np.float32), K_R, T_C1C0
+
+
+def test_epnp_recovers_forward_pose_with_outliers(pose_correspondences) -> None:
+    points_C0, _, pixels_1, K_R, expected = pose_correspondences
+    cv2.setRNGSeed(0)
+
+    estimated, indices, errors = experiment["estimate_relative_pose"](
+        points_C0, pixels_1, K_R
+    )
+
+    assert estimated.shape == (4, 4)
+    assert estimated.dtype == np.float64
+    np.testing.assert_array_equal(estimated[3], [0, 0, 0, 1])
+    np.testing.assert_allclose(estimated, expected, atol=0.002)
+    np.testing.assert_array_equal(np.sort(indices), np.arange(len(points_C0) - 12))
+    projected = project_points(
+        points_C0[indices] @ estimated[:3, :3].T + estimated[:3, 3], K_R
+    )
+    np.testing.assert_allclose(
+        errors, np.linalg.norm(projected - pixels_1[indices], axis=1)
+    )
+    assert errors.mean() < 0.2
+    # The inverse has a measurably different reprojection on this fixture.
+    inverse = np.linalg.inv(estimated)
+    wrong_pixels = project_points(
+        points_C0[indices] @ inverse[:3, :3].T + inverse[:3, 3], K_R
+    )
+    assert np.linalg.norm(wrong_pixels - pixels_1[indices], axis=1).mean() > 5
+
+
+@pytest.mark.parametrize("count", range(5))
+def test_epnp_requires_five_points_without_calling_opencv(monkeypatch, count) -> None:
+    def unexpected_call(*args, **kwargs):
+        pytest.fail("Insufficient correspondences must skip solvePnPRansac")
+
+    monkeypatch.setattr(cv2, "solvePnPRansac", unexpected_call)
+    with pytest.raises(ValueError, match="at least 5 correspondences"):
+        experiment["estimate_relative_pose"](
+            np.zeros((count, 3)), np.zeros((count, 2)), np.eye(3)
+        )
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        (False, None, None, None),
+        (True, np.zeros((3, 1)), np.zeros((3, 1)), None),
+        (True, np.zeros((3, 1)), np.zeros((3, 1)), np.empty((0, 1), dtype=np.int32)),
+        (True, np.full((3, 1), np.nan), np.zeros((3, 1)), np.array([[0]])),
+    ],
+)
+def test_unusable_pnp_results_are_rejected(monkeypatch, result) -> None:
+    monkeypatch.setattr(cv2, "solvePnPRansac", lambda **kwargs: result)
+    with pytest.raises(RuntimeError, match="pose"):
+        experiment["estimate_relative_pose"](
+            np.ones((6, 3)), np.ones((6, 2)), np.eye(3)
+        )
+
+
+@pytest.mark.parametrize(
+    "gt_case", ["rigid", "missing", "nonrigid", "reflection", "near_rigid", "singular"]
+)
+def test_experiment_pose_outputs_and_local_gt_comparison(
+    tmp_path, monkeypatch, capsys, pose_correspondences, gt_case
+) -> None:
+    points, pixels_0, pixels_1, K_R, expected = pose_correspondences
+    rgb = np.zeros((192, 256, 3), dtype=np.uint8)
+    depth = np.full(rgb.shape[:2], np.nan, dtype=np.float32)
+    depth[pixels_0[:, 1].astype(int), pixels_0[:, 0].astype(int)] = points[:, 2]
+    # Remove two matches before PnP and permute the accepted-match order.
+    depth[pixels_0[:2, 1].astype(int), pixels_0[:2, 0].astype(int)] = np.nan
+    order = np.random.default_rng(8).permutation(len(points))
+    valid_order = order[order >= 2]
+    mock_sift_matches(monkeypatch, pixels_0, pixels_1[::-1], order)
+    calibration = Calibration(
+        K_R=K_R,
+        K_D=K_R.copy(),
+        T_RD=np.eye(4),
+        rgb_shape=rgb.shape[:2],
+        depth_shape=depth.shape,
+    )
+    T_WC0 = np.eye(4)
+    T_WC0[:3, :3] = cv2.Rodrigues(np.array([0.1, 0.2, -0.3]))[0]
+    T_WC0[:3, 3] = [1, 2, 3]
+    # Deliberately differ from the estimated motion to exercise error reporting.
+    gt = expected.copy()
+    gt[:3, :3] = cv2.Rodrigues(np.array([0.04, 0.01, -0.02]))[0]
+    gt[:3, 3] += [0.01, -0.02, 0.03]
+    if gt_case == "nonrigid":
+        gt[:3, :3] *= 1.1
+    elif gt_case == "reflection":
+        gt[:3, 0] *= -1
+    elif gt_case == "near_rigid":
+        gt[:3, :3] *= 1 + 1e-6
+    T_WC1 = T_WC0 @ np.linalg.inv(gt)
+    if gt_case == "missing":
+        T_WC1 = None
+    elif gt_case == "singular":
+        T_WC1[:3, :3] = 0
+    original_T_WC0 = T_WC0.copy()
+    original_T_WC1 = None if T_WC1 is None else T_WC1.copy()
+    original_solver = cv2.solvePnPRansac
+
+    def solve_pnp(**kwargs):
+        np.testing.assert_allclose(kwargs["objectPoints"], points[valid_order])
+        np.testing.assert_array_equal(kwargs["imagePoints"], pixels_1[valid_order])
+        np.testing.assert_array_equal(kwargs["cameraMatrix"], K_R)
+        assert kwargs["distCoeffs"] is None
+        assert kwargs["flags"] == cv2.SOLVEPNP_EPNP
+        assert kwargs["reprojectionError"] == 3.0
+        assert kwargs["iterationsCount"] == 100
+        assert kwargs["confidence"] == 0.99
+        return original_solver(**kwargs)
+
+    monkeypatch.setattr(cv2, "solvePnPRansac", solve_pnp)
+    cv2.setRNGSeed(0)
+    run_experiment(
+        tmp_path,
+        monkeypatch,
+        rgb,
+        rgb,
+        depth=depth,
+        calibration=calibration,
+        reference_poses=(T_WC0, T_WC1),
+    )
+
+    with np.load(tmp_path / "synthetic_frames0_1_sift.npz") as saved:
+        assert saved["pose_status"].item() == "estimated"
+        estimated = saved["T_C1C0"]
+        np.testing.assert_allclose(estimated, expected, atol=0.002)
+        indices = saved["inlier_indices"]
+        np.testing.assert_array_equal(
+            np.sort(valid_order[indices]), np.arange(2, len(points) - 12)
+        )
+        projected = project_points(
+            saved["points_C0"][indices] @ estimated[:3, :3].T + estimated[:3, 3], K_R
+        )
+        errors = np.linalg.norm(projected - saved["pixels_1"][indices], axis=1)
+        np.testing.assert_allclose(saved["inlier_reprojection_errors_px"], errors)
+        if gt_case in ("missing", "singular"):
+            assert "T_C1C0_gt" not in saved
+        else:
+            np.testing.assert_allclose(saved["T_C1C0_gt"], gt, atol=1e-14)
+
+    np.testing.assert_array_equal(T_WC0, original_T_WC0)
+    if T_WC1 is not None:
+        np.testing.assert_array_equal(T_WC1, original_T_WC1)
+    diagnostics = capsys.readouterr().out
+    assert f"3D-2D correspondences: {len(valid_order)}" in diagnostics
+    assert f"RANSAC inliers: {len(indices)}" in diagnostics
+    assert (
+        f"(inliers / correspondences): {len(indices) / len(valid_order):.4f}"
+        in diagnostics
+    )
+    assert f"mean={errors.mean():.4f}, median={np.median(errors):.4f}" in diagnostics
+    assert (
+        f"RMSE={np.sqrt(np.mean(errors**2)):.4f}, max={errors.max():.4f}" in diagnostics
+    )
+    assert f"Estimated translation (m): {estimated[:3, 3]}" in diagnostics
+    if gt_case in ("missing", "singular"):
+        assert "GT comparison unavailable:" in diagnostics
+        assert "Translation-vector error norm" not in diagnostics
+    else:
+        assert f"GT translation (m): {gt[:3, 3]}" in diagnostics
+        error = np.linalg.norm(estimated[:3, 3] - gt[:3, 3])
+        assert f"Translation-vector error norm (m): {error:.6f}" in diagnostics
+        if gt_case in ("nonrigid", "reflection"):
+            assert "Rotation angle unavailable:" in diagnostics
+            assert "Rotation error (deg" not in diagnostics
+        else:
+            cosine = (np.trace(estimated[:3, :3] @ gt[:3, :3].T) - 1) / 2
+            angle = np.degrees(np.arccos(np.clip(cosine, -1, 1)))
+            assert (
+                f"Rotation error (deg, raw GT accepted at atol=1e-4): {angle:.6f}"
+                in diagnostics
+            )
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_failed_solver_preserves_correspondences_and_visualization(
+    tmp_path, monkeypatch, capsys, raises
+) -> None:
+    def failed_solver(**kwargs):
+        if raises:
+            raise cv2.error("Synthetic solver error")
+        return False, None, None, None
+
+    monkeypatch.setattr(cv2, "solvePnPRansac", failed_solver)
+    rgb = np.random.default_rng(0).integers(0, 256, (192, 256, 3), dtype=np.uint8)
+    points, _, _, visualization = run_experiment(tmp_path, monkeypatch, rgb, rgb)
+
+    assert len(points) > 5
+    assert visualization.shape == (192, 512, 3)
+    with np.load(tmp_path / "synthetic_frames0_1_sift.npz") as saved:
+        assert saved["pose_status"].item() != "estimated"
+        assert "T_C1C0" not in saved
+        assert "T_C1C0_gt" not in saved
+        assert saved["inlier_indices"].shape == (0,)
+        assert saved["inlier_reprojection_errors_px"].shape == (0,)
+    diagnostics = capsys.readouterr().out
+    assert "Pose estimation unavailable:" in diagnostics
+    assert "RANSAC inliers: 0" in diagnostics
+    assert "GT comparison unavailable: no estimated pose" in diagnostics
