@@ -1,4 +1,4 @@
-"""Match SIFT features between source RGB frames 0 and 1 of a ScanNet capture."""
+"""Associate two-frame ScanNet SIFT matches with frame-0 depth."""
 
 import argparse
 from pathlib import Path
@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 
 from scene_recall.datasets.scannet import ScanNetReader
+from scene_recall.geometry.camera import backproject_rgb_pixels, project_points
 
 
 def main() -> None:
@@ -19,8 +20,10 @@ def main() -> None:
         parser.error("--ratio must be finite and strictly between 0 and 1")
 
     with ScanNetReader(args.sens_path, start=0, stop=2) as reader:
-        rgb_0 = next(reader).rgb
+        frame_0 = next(reader)
+        rgb_0 = frame_0.rgb
         rgb_1 = next(reader).rgb
+        calibration = reader.calibration
         sequence_id = reader.sequence_id
 
     sift = cv2.SIFT_create()
@@ -49,19 +52,41 @@ def main() -> None:
         [keypoints_1[match.trainIdx].pt for match in matches], dtype=np.float32
     ).reshape(-1, 2)
 
+    # ScanNet's registered RGB and depth grids share optical frame C0.
+    points_C0 = backproject_rgb_pixels(
+        pixels_0, frame_0.depth, calibration.K_R, calibration.K_D
+    )
+    valid_depth = np.isfinite(points_C0).all(axis=1)
+    points_C0 = points_C0[valid_depth]
+    pixels_0 = pixels_0[valid_depth]
+    pixels_1 = pixels_1[valid_depth]
+    if not np.allclose(
+        project_points(points_C0, calibration.K_R),
+        pixels_0,
+        rtol=1e-10,
+        atol=1e-8,
+    ):
+        raise RuntimeError("Frame-0 RGB reprojection check failed")
+
     retention = len(matches) / len(knn_matches) if knn_matches else 0.0
+    depth_retention = len(points_C0) / len(matches) if matches else 0.0
     print("Source RGB frames: 0 -> 1")
     print(f"Keypoints in frame 0: {len(keypoints_0)}")
     print(f"Keypoints in frame 1: {len(keypoints_1)}")
     print(f"KNN matches (query rows, k=2): {len(knn_matches)}")
     print(f"Matches surviving ratio test ({args.ratio:g}): {len(matches)}")
     print(f"Retention ratio (accepted / KNN rows): {retention:.4f}")
+    print(f"Matches with valid frame-0 depth: {len(points_C0)}")
+    print(f"Depth-valid retention ratio (valid / accepted): {depth_retention:.4f}")
+    print("Frame-0 RGB reprojection check: passed")
 
     output_dir = args.output_dir.expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{sequence_id}_frames0_1_sift"
     coordinates_path = output_dir / f"{stem}.npz"
-    np.savez(coordinates_path, pixels_0=pixels_0, pixels_1=pixels_1)
+    np.savez(
+        coordinates_path, points_C0=points_C0, pixels_0=pixels_0, pixels_1=pixels_1
+    )
 
     # OpenCV draws and writes BGR images. Keep the native RGB pixel grids.
     visualization = cv2.drawMatches(
@@ -77,7 +102,8 @@ def main() -> None:
     visualization_path = output_dir / f"{stem}.png"
     if not cv2.imwrite(str(visualization_path), visualization):
         raise SystemExit(f"Could not write visualization: {visualization_path}")
-    print(f"Matched RGB pixels (x, y): {pixels_0.shape}, {pixels_1.shape}")
+    print(f"Depth-valid RGB pixels (x, y): {pixels_0.shape}, {pixels_1.shape}")
+    print(f"Aligned 3D-2D correspondences: {points_C0.shape}, {pixels_1.shape}")
     print(f"Coordinates: {coordinates_path}")
     print(f"Visualization (frame 0 left, frame 1 right): {visualization_path}")
 
