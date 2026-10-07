@@ -119,3 +119,47 @@ with no visibility test against an RGB depth map.
 Keep source datasets outside the repository and generated point clouds under the
 ignored `outputs/` directory or outside the repository. The CLI accepts both
 paths explicitly.
+
+## Two-frame SIFT experiment
+
+Run from the repository root:
+
+```bash
+uv run python experiments/scannet_sift.py \
+    --sens-path /path/to/scene0000_00.sens
+```
+
+The experiment reads source frames 0 and 1 with `ScanNetReader(start=0, stop=2)`.
+It detects SIFT on grayscale conversions of the native RGB images, then matches
+frame 0 descriptors against frame 1 using brute-force L2 KNN matching with `k=2`.
+Lowe's ratio test accepts the nearest neighbor when
+`nearest.distance < ratio * second_nearest.distance`. The default ratio is 0.75,
+adjustable with `--ratio`. Rows with fewer than two neighbors are rejected.
+Missing descriptors produce zero matches and a retention ratio of zero.
+
+Diagnostics report keypoint counts, KNN query-row count, accepted matches, and
+retention as accepted matches divided by KNN query rows. A capture must contain
+at least two frames. The experiment uses only RGB from the reader's observations.
+Depth association and pose estimation are outside its scope.
+
+Outputs default to the ignored `outputs/` directory, adjustable with
+`--output-dir`:
+
+- `<sequence_id>_frames0_1_sift.png` shows every accepted match with frame 0 on
+  the left and frame 1 on the right. RGB colors are preserved.
+- `<sequence_id>_frames0_1_sift.npz` contains float32 arrays `pixels_0` and
+  `pixels_1`, both shaped `(N, 2)` with `(x, y)` coordinates in each frame's
+  native RGB grid. Row `i` in each array is the same accepted match. Empty
+  results have shape `(0, 2)`. Matches remain directed from frame 0 to frame 1,
+  and multiple frame 0 features can match the same frame 1 feature.
+
+```python
+import numpy as np
+
+with np.load("outputs/scene0000_00_frames0_1_sift.npz") as matches:
+    pixels_0 = matches["pixels_0"]
+    pixels_1 = matches["pixels_1"]
+```
+
+The locked `opencv-python-headless` dependency supplies SIFT and image writing
+without GUI or contrib modules. The implementation stays in `experiments/`.
