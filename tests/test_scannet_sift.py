@@ -24,7 +24,9 @@ def run_experiment(
     depth=None,
     calibration=None,
     reference_poses=(None, None),
+    frame_indices=None,
 ):
+    frame0, frame1 = (0, 1) if frame_indices is None else frame_indices
     if depth is None:
         depth = np.full(rgb_0.shape[:2], 2.0, dtype=np.float32)
     if calibration is None:
@@ -40,13 +42,28 @@ def run_experiment(
         sequence_id = "synthetic"
 
         def __init__(self, sens_path, *, start, stop):
-            assert (start, stop) == (0, 2)
+            assert (start, stop) == (min(frame0, frame1), max(frame0, frame1) + 1)
             self.calibration = calibration
             self.frames = iter(
-                [
-                    SimpleNamespace(rgb=rgb_0, depth=depth, T_WC_D=reference_poses[0]),
-                    SimpleNamespace(rgb=rgb_1, T_WC_D=reference_poses[1]),
-                ]
+                SimpleNamespace(
+                    rgb=(
+                        rgb_0
+                        if index == frame0
+                        else rgb_1
+                        if index == frame1
+                        else np.zeros_like(rgb_0)
+                    ),
+                    depth=depth if index == frame0 else np.full_like(depth, np.nan),
+                    T_WC_D=(
+                        reference_poses[0]
+                        if index == frame0
+                        else reference_poses[1]
+                        if index == frame1
+                        else None
+                    ),
+                    frame_index=index - start,
+                )
+                for index in range(start, stop)
             )
             self.closed = False
 
@@ -59,6 +76,9 @@ def run_experiment(
         def __next__(self):
             return next(self.frames)
 
+        def __iter__(self):
+            return self
+
     main = experiment["main"]
     monkeypatch.setitem(main.__globals__, "ScanNetReader", RGBDReader)
     monkeypatch.setattr(
@@ -70,15 +90,58 @@ def run_experiment(
             "unused.sens",
             "--output-dir",
             str(tmp_path),
+            *(
+                ["--frame0", str(frame0), "--frame1", str(frame1)]
+                if frame_indices is not None
+                else []
+            ),
         ],
     )
     main()
-    with np.load(tmp_path / "synthetic_frames0_1_sift.npz") as matches:
+    stem = f"synthetic_frames{frame0}_{frame1}_sift"
+    with np.load(tmp_path / f"{stem}.npz") as matches:
         points_C0 = matches["points_C0"]
         pixels_0 = matches["pixels_0"]
         pixels_1 = matches["pixels_1"]
-    visualization = cv2.imread(str(tmp_path / "synthetic_frames0_1_sift.png"))
+    visualization = cv2.imread(str(tmp_path / f"{stem}.png"))
     return points_C0, pixels_0, pixels_1, visualization
+
+
+@pytest.mark.parametrize("frame_indices", [(0, 2), (0, 5), (0, 10), (4, 4)])
+def test_selected_source_frames_have_distinct_outputs(
+    tmp_path, monkeypatch, capsys, frame_indices
+) -> None:
+    rgb_0 = np.full((64, 64, 3), [210, 60, 20], dtype=np.uint8)
+    rgb_1 = np.full_like(rgb_0, [30, 90, 180])
+    if frame_indices[0] == frame_indices[1]:
+        rgb_1 = rgb_0
+    run_experiment(tmp_path, monkeypatch, rgb_0, rgb_1)
+    _, _, _, visualization = run_experiment(
+        tmp_path, monkeypatch, rgb_0, rgb_1, frame_indices=frame_indices
+    )
+
+    frame0, frame1 = frame_indices
+    for pair in ((0, 1), frame_indices):
+        for extension in ("npz", "png"):
+            assert (
+                tmp_path / f"synthetic_frames{pair[0]}_{pair[1]}_sift.{extension}"
+            ).is_file()
+    np.testing.assert_array_equal(visualization[:, :64], rgb_0[..., ::-1])
+    np.testing.assert_array_equal(visualization[:, 64:], rgb_1[..., ::-1])
+    assert f"Source RGB frames: {frame0} -> {frame1}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("argument", ["--frame0", "--frame1"])
+def test_negative_source_indices_are_rejected(monkeypatch, capsys, argument) -> None:
+    monkeypatch.setattr(
+        sys, "argv", ["scannet_sift.py", "--sens-path", "unused.sens", argument, "-1"]
+    )
+
+    with pytest.raises(SystemExit) as error:
+        experiment["main"]()
+
+    assert error.value.code == 2
+    assert "must be nonnegative source indices" in capsys.readouterr().err
 
 
 def test_translated_texture_preserves_pixel_correspondence(
@@ -368,8 +431,9 @@ def test_unusable_pnp_results_are_rejected(monkeypatch, result) -> None:
 @pytest.mark.parametrize(
     "gt_case", ["rigid", "missing", "nonrigid", "reflection", "near_rigid", "singular"]
 )
+@pytest.mark.parametrize("frame_indices", [(0, 1), (4, 10), (10, 4)])
 def test_experiment_pose_outputs_and_local_gt_comparison(
-    tmp_path, monkeypatch, capsys, pose_correspondences, gt_case
+    tmp_path, monkeypatch, capsys, pose_correspondences, gt_case, frame_indices
 ) -> None:
     points, pixels_0, pixels_1, K_R, expected = pose_correspondences
     rgb = np.zeros((192, 256, 3), dtype=np.uint8)
@@ -430,9 +494,11 @@ def test_experiment_pose_outputs_and_local_gt_comparison(
         depth=depth,
         calibration=calibration,
         reference_poses=(T_WC0, T_WC1),
+        frame_indices=frame_indices,
     )
 
-    with np.load(tmp_path / "synthetic_frames0_1_sift.npz") as saved:
+    frame0, frame1 = frame_indices
+    with np.load(tmp_path / f"synthetic_frames{frame0}_{frame1}_sift.npz") as saved:
         assert saved["pose_status"].item() == "estimated"
         estimated = saved["T_C1C0"]
         np.testing.assert_allclose(estimated, expected, atol=0.002)
@@ -454,6 +520,7 @@ def test_experiment_pose_outputs_and_local_gt_comparison(
     if T_WC1 is not None:
         np.testing.assert_array_equal(T_WC1, original_T_WC1)
     diagnostics = capsys.readouterr().out
+    assert f"Source RGB frames: {frame0} -> {frame1}" in diagnostics
     assert f"3D-2D correspondences: {len(valid_order)}" in diagnostics
     assert f"RANSAC inliers: {len(indices)}" in diagnostics
     assert (
@@ -465,11 +532,20 @@ def test_experiment_pose_outputs_and_local_gt_comparison(
         f"RMSE={np.sqrt(np.mean(errors**2)):.4f}, max={errors.max():.4f}" in diagnostics
     )
     assert f"Estimated translation (m): {estimated[:3, 3]}" in diagnostics
+    assert (
+        f"Estimated translation magnitude (m): {np.linalg.norm(estimated[:3, 3]):.6f}"
+        in diagnostics
+    )
     if gt_case in ("missing", "singular"):
         assert "GT comparison unavailable:" in diagnostics
         assert "Translation-vector error norm" not in diagnostics
+        assert "GT translation magnitude" not in diagnostics
     else:
         assert f"GT translation (m): {gt[:3, 3]}" in diagnostics
+        assert (
+            f"GT translation magnitude (m): {np.linalg.norm(gt[:3, 3]):.6f}"
+            in diagnostics
+        )
         error = np.linalg.norm(estimated[:3, 3] - gt[:3, 3])
         assert f"Translation-vector error norm (m): {error:.6f}" in diagnostics
         if gt_case in ("nonrigid", "reflection"):

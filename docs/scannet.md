@@ -129,25 +129,28 @@ uv run python experiments/scannet_sift.py \
     --sens-path /path/to/scene0000_00.sens
 ```
 
-The experiment reads source frames 0 and 1 with `ScanNetReader(start=0, stop=2)`.
+Use `--frame0` and `--frame1` to select nonnegative source frame indices. They
+default to 0 and 1. The experiment reads their enclosing range with
+`ScanNetReader` and retains the selected frames in the requested order. C0 and
+C1 refer to the selected source and target camera frames, respectively.
 It detects SIFT on grayscale conversions of the native RGB images, then matches
-frame 0 descriptors against frame 1 using brute-force L2 KNN matching with `k=2`.
+source descriptors against the target using brute-force L2 KNN matching with `k=2`.
 Lowe's ratio test accepts the nearest neighbor when
 `nearest.distance < ratio * second_nearest.distance`. The default ratio is 0.75,
 adjustable with `--ratio`. Rows with fewer than two neighbors are rejected.
 Missing descriptors produce zero matches and a retention ratio of zero.
 
 Diagnostics report keypoint counts, KNN query-row count, accepted matches, and
-retention as accepted matches divided by KNN query rows. A capture must contain
-at least two frames.
+retention as accepted matches divided by KNN query rows. Both selected indices
+must be within the capture.
 
-Accepted frame-0 RGB pixels are backprojected with frame-0 z-depth using the
+Accepted source RGB pixels are backprojected with source z-depth using the
 registered grids' `K_R` and `K_D`. Invalid depth removes the same row from both
 pixel arrays and the 3D array. The remaining `points_C0` are float64 XYZ in
 camera frame C0, in meters. Reprojecting them through `K_R` must recover their
-frame-0 RGB pixels. Diagnostics also report depth-valid count and retention.
+source RGB pixels. Diagnostics also report depth-valid count and retention.
 
-The experiment passes `points_C0`, the aligned frame-1 RGB `pixels_1`, and `K_R`
+The experiment passes `points_C0`, the aligned target RGB `pixels_1`, and `K_R`
 to OpenCV `solvePnPRansac`. This classical baseline uses `SOLVEPNP_EPNP`, a 3 px
 reprojection threshold, 100 iterations, confidence 0.99, and `distCoeffs=None`.
 It requires at least five correspondences to retain EPNP, since
@@ -166,9 +169,10 @@ and preserve the correspondence and visualization outputs without an estimate.
 After estimation, available ScanNet reference poses supply
 `T_C1C0_gt = inv(T_WC1) @ T_WC0`. The canonical `T_WC_D` poses apply here because
 ScanNet's registered depth and RGB optical frames coincide. Diagnostics print
-the estimated translation, raw GT translation, and their vector difference
-norm in meters. Missing reference poses or a singular frame-1 reference pose
-make the GT comparison unavailable without discarding the estimate.
+the estimated translation, raw GT translation, both translation magnitudes,
+and their vector difference norm in meters. Missing reference poses or a
+singular target reference pose make the GT comparison unavailable without
+discarding the estimate.
 
 Rotation comparison is local to this experiment. The raw relative GT rotation
 is preserved and its Frobenius difference from the estimate is always reported
@@ -184,10 +188,11 @@ data contract's transform validation policy is unchanged.
 Outputs default to the ignored `outputs/` directory, adjustable with
 `--output-dir`:
 
-- `<sequence_id>_frames0_1_sift.png` shows every accepted match with frame 0 on
-  the left and frame 1 on the right. RGB colors are preserved.
-- `<sequence_id>_frames0_1_sift.npz` contains float32 arrays `pixels_0` and
-  `pixels_1`, both shaped `(N, 2)` with `(x, y)` coordinates in each frame's
+- `<sequence_id>_frames<frame0>_<frame1>_sift.png` shows every accepted match
+  with the source frame on the left and target frame on the right. RGB colors
+  are preserved.
+- `<sequence_id>_frames<frame0>_<frame1>_sift.npz` contains float32 arrays
+  `pixels_0` and `pixels_1`, both shaped `(N, 2)` with `(x, y)` coordinates in each frame's
   native RGB grid, plus float64 `points_C0` shaped `(N, 3)`. Row `i` in each
   array is the same depth-valid match. Empty results have shapes `(0, 2)` and
   `(0, 3)`. Matches remain directed from frame 0 to frame 1, and multiple

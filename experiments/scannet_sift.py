@@ -1,4 +1,4 @@
-"""Estimate the frame-0 to frame-1 ScanNet pose from depth-valid SIFT matches."""
+"""Estimate a two-frame ScanNet pose from depth-valid SIFT matches."""
 
 import argparse
 from pathlib import Path
@@ -47,19 +47,28 @@ def estimate_relative_pose(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sens-path", type=Path, required=True)
+    parser.add_argument("--frame0", type=int, default=0)
+    parser.add_argument("--frame1", type=int, default=1)
     parser.add_argument("--ratio", type=float, default=0.75)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
     args = parser.parse_args()
     if not 0 < args.ratio < 1:
         parser.error("--ratio must be finite and strictly between 0 and 1")
+    if args.frame0 < 0 or args.frame1 < 0:
+        parser.error("--frame0 and --frame1 must be nonnegative source indices")
 
-    with ScanNetReader(args.sens_path, start=0, stop=2) as reader:
-        frame_0 = next(reader)
-        rgb_0 = frame_0.rgb
-        frame_1 = next(reader)
-        rgb_1 = frame_1.rgb
+    start = min(args.frame0, args.frame1)
+    stop = max(args.frame0, args.frame1) + 1
+    with ScanNetReader(args.sens_path, start=start, stop=stop) as reader:
+        frames = {
+            index: frame
+            for index, frame in enumerate(reader, start=start)
+            if index in (args.frame0, args.frame1)
+        }
         calibration = reader.calibration
         sequence_id = reader.sequence_id
+    frame_0, frame_1 = frames[args.frame0], frames[args.frame1]
+    rgb_0, rgb_1 = frame_0.rgb, frame_1.rgb
 
     sift = cv2.SIFT_create()
     keypoints_0, descriptors_0 = sift.detectAndCompute(
@@ -101,19 +110,19 @@ def main() -> None:
         rtol=1e-10,
         atol=1e-8,
     ):
-        raise RuntimeError("Frame-0 RGB reprojection check failed")
+        raise RuntimeError(f"Frame-{args.frame0} RGB reprojection check failed")
 
     retention = len(matches) / len(knn_matches) if knn_matches else 0.0
     depth_retention = len(points_C0) / len(matches) if matches else 0.0
-    print("Source RGB frames: 0 -> 1")
-    print(f"Keypoints in frame 0: {len(keypoints_0)}")
-    print(f"Keypoints in frame 1: {len(keypoints_1)}")
+    print(f"Source RGB frames: {args.frame0} -> {args.frame1}")
+    print(f"Keypoints in frame {args.frame0}: {len(keypoints_0)}")
+    print(f"Keypoints in frame {args.frame1}: {len(keypoints_1)}")
     print(f"KNN matches (query rows, k=2): {len(knn_matches)}")
     print(f"Matches surviving ratio test ({args.ratio:g}): {len(matches)}")
     print(f"Retention ratio (accepted / KNN rows): {retention:.4f}")
-    print(f"Matches with valid frame-0 depth: {len(points_C0)}")
+    print(f"Matches with valid frame-{args.frame0} depth: {len(points_C0)}")
     print(f"Depth-valid retention ratio (valid / accepted): {depth_retention:.4f}")
-    print("Frame-0 RGB reprojection check: passed")
+    print(f"Frame-{args.frame0} RGB reprojection check: passed")
 
     results = {"points_C0": points_C0, "pixels_0": pixels_0, "pixels_1": pixels_1}
     print(f"3D-2D correspondences: {len(points_C0)}")
@@ -151,6 +160,9 @@ def main() -> None:
             f"RMSE={np.sqrt(np.mean(errors**2)):.4f}, max={errors.max():.4f}"
         )
         print(f"Estimated translation (m): {T_C1C0[:3, 3]}")
+        print(
+            f"Estimated translation magnitude (m): {np.linalg.norm(T_C1C0[:3, 3]):.6f}"
+        )
 
         # ScanNet's registered C_D and C_R share the optical frame in each view.
         T_WC0, T_WC1 = frame_0.T_WC_D, frame_1.T_WC_D
@@ -160,13 +172,20 @@ def main() -> None:
             try:
                 T_C1C0_gt = np.linalg.inv(T_WC1) @ T_WC0
             except np.linalg.LinAlgError:
-                print("GT comparison unavailable: frame-1 reference pose is singular")
+                print(
+                    f"GT comparison unavailable: frame-{args.frame1} "
+                    "reference pose is singular"
+                )
             else:
                 results["T_C1C0_gt"] = T_C1C0_gt
                 translation_error = np.linalg.norm(T_C1C0[:3, 3] - T_C1C0_gt[:3, 3])
                 print("GT T_C1C0 = inv(T_WC1) @ T_WC0:")
                 print(np.array2string(T_C1C0_gt, precision=8))
                 print(f"GT translation (m): {T_C1C0_gt[:3, 3]}")
+                print(
+                    "GT translation magnitude (m): "
+                    f"{np.linalg.norm(T_C1C0_gt[:3, 3]):.6f}"
+                )
                 print(f"Translation-vector error norm (m): {translation_error:.6f}")
 
                 # Local diagnostic only. Preserve the raw GT without SO(3) repair.
@@ -194,7 +213,7 @@ def main() -> None:
 
     output_dir = args.output_dir.expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"{sequence_id}_frames0_1_sift"
+    stem = f"{sequence_id}_frames{args.frame0}_{args.frame1}_sift"
     coordinates_path = output_dir / f"{stem}.npz"
     np.savez(coordinates_path, **results)
 
@@ -215,7 +234,10 @@ def main() -> None:
     print(f"Depth-valid RGB pixels (x, y): {pixels_0.shape}, {pixels_1.shape}")
     print(f"Aligned 3D-2D correspondences: {points_C0.shape}, {pixels_1.shape}")
     print(f"Coordinates: {coordinates_path}")
-    print(f"Visualization (frame 0 left, frame 1 right): {visualization_path}")
+    print(
+        f"Visualization (frame {args.frame0} left, frame {args.frame1} right): "
+        f"{visualization_path}"
+    )
 
 
 if __name__ == "__main__":
