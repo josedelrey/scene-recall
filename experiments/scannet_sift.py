@@ -83,6 +83,68 @@ def print_reprojection_diagnostics(
     )
 
 
+def diagnose_pnp_refinement(
+    points_C0: np.ndarray,
+    pixels_1: np.ndarray,
+    K_R: np.ndarray,
+    T_C1C0: np.ndarray,
+    T_C1C0_gt: np.ndarray | None,
+) -> None:
+    """Compare LM and the original pose on the original RANSAC inliers only."""
+    poses = [("Original EPnP+RANSAC", T_C1C0)]
+    try:
+        rvec, tvec = cv2.solvePnPRefineLM(
+            objectPoints=np.array(points_C0, dtype=np.float64, order="C", copy=True),
+            imagePoints=np.array(pixels_1, dtype=np.float64, order="C", copy=True),
+            cameraMatrix=K_R.copy(),
+            distCoeffs=None,
+            rvec=cv2.Rodrigues(T_C1C0[:3, :3].copy())[0],
+            tvec=T_C1C0[:3, 3].reshape(3, 1).copy(),
+        )
+        if not np.isfinite(rvec).all() or not np.isfinite(tvec).all():
+            raise RuntimeError("solvePnPRefineLM returned a nonfinite pose")
+        refined = np.eye(4, dtype=np.float64)
+        refined[:3, :3] = cv2.Rodrigues(rvec)[0]
+        refined[:3, 3] = tvec.reshape(3)
+    except (ValueError, RuntimeError, cv2.error) as error:
+        print(f"PnP refinement failed: {error}")
+    else:
+        print("PnP refinement: solvePnPRefineLM on original RANSAC inliers")
+        poses.append(("LM-refined", refined))
+
+    valid_gt_rotation = False
+    if T_C1C0_gt is not None:
+        poses.append(("GT", T_C1C0_gt))
+        R_gt = T_C1C0_gt[:3, :3]
+        valid_gt_rotation = np.allclose(
+            R_gt.T @ R_gt, np.eye(3), rtol=0, atol=1e-4
+        ) and np.isclose(np.linalg.det(R_gt), 1, rtol=0, atol=1e-4)
+    else:
+        print("PnP refinement GT comparison unavailable: no relative GT pose")
+    for label, pose in poses:
+        print_reprojection_diagnostics(label, points_C0, pixels_1, K_R, pose)
+        if T_C1C0_gt is None:
+            print(f"{label} translation-vector error against GT (mm): unavailable")
+            print(f"{label} rotation error against GT (deg): unavailable")
+            continue
+        translation_error_mm = 1000 * np.linalg.norm(pose[:3, 3] - T_C1C0_gt[:3, 3])
+        print(
+            f"{label} translation-vector error against GT (mm): "
+            f"{translation_error_mm:.6f}"
+        )
+        if valid_gt_rotation:
+            cosine = (np.trace(pose[:3, :3] @ R_gt.T) - 1) / 2
+            angle = (
+                0.0 if label == "GT" else np.degrees(np.arccos(np.clip(cosine, -1, 1)))
+            )
+            print(f"{label} rotation error against GT (deg): {angle:.6f}")
+        else:
+            print(
+                f"{label} rotation error against GT (deg): unavailable "
+                "(raw GT fails rotation check at atol=1e-4)"
+            )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sens-path", type=Path, required=True)
@@ -91,6 +153,7 @@ def main() -> None:
     parser.add_argument("--ratio", type=float, default=0.75)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
     parser.add_argument("--diagnose-gt-reprojection", action="store_true")
+    parser.add_argument("--diagnose-pnp-refinement", action="store_true")
     args = parser.parse_args()
     if not 0 < args.ratio < 1:
         parser.error("--ratio must be finite and strictly between 0 and 1")
@@ -179,6 +242,8 @@ def main() -> None:
         print("GT comparison unavailable: no estimated pose")
         if args.diagnose_gt_reprojection:
             print("GT reprojection diagnostic unavailable: no estimated pose")
+        if args.diagnose_pnp_refinement:
+            print("PnP refinement unavailable: no estimated pose")
         results["pose_status"] = np.array(str(error))
         results["inlier_indices"] = np.empty(0, dtype=np.int32)
         results["inlier_reprojection_errors_px"] = np.empty(0, dtype=np.float64)
@@ -269,6 +334,15 @@ def main() -> None:
                 )
             else:
                 print("GT reprojection diagnostic unavailable: no relative GT pose")
+
+        if args.diagnose_pnp_refinement:
+            diagnose_pnp_refinement(
+                points_C0[inlier_indices],
+                pixels_1[inlier_indices],
+                calibration.K_R,
+                T_C1C0,
+                results.get("T_C1C0_gt"),
+            )
 
     output_dir = args.output_dir.expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)

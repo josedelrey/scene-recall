@@ -26,6 +26,7 @@ def run_experiment(
     reference_poses=(None, None),
     frame_indices=None,
     diagnose_gt_reprojection=False,
+    diagnose_pnp_refinement=False,
 ):
     frame0, frame1 = (0, 1) if frame_indices is None else frame_indices
     if depth is None:
@@ -97,6 +98,7 @@ def run_experiment(
                 else []
             ),
             *(["--diagnose-gt-reprojection"] if diagnose_gt_reprojection else []),
+            *(["--diagnose-pnp-refinement"] if diagnose_pnp_refinement else []),
         ],
     )
     main()
@@ -491,6 +493,287 @@ def test_all_invalid_reprojections_are_reported(capsys):
     assert "below 3 px (all selected): 0.00%" in diagnostics
 
 
+def test_lm_refinement_improves_inlier_fit_without_mutating_originals(
+    monkeypatch, capsys, pose_correspondences
+):
+    points, _, pixels, intrinsic, gt = pose_correspondences
+    cv2.setRNGSeed(0)
+    original, indices, _ = experiment["estimate_relative_pose"](
+        points, pixels, intrinsic
+    )
+    selected_points, selected_pixels = points[indices], pixels[indices]
+    snapshots = [
+        array.copy()
+        for array in (selected_points, selected_pixels, intrinsic, original, gt)
+    ]
+    original_refiner = cv2.solvePnPRefineLM
+    refined_poses = []
+
+    def refine(**kwargs):
+        np.testing.assert_array_equal(kwargs["objectPoints"], selected_points)
+        np.testing.assert_array_equal(kwargs["imagePoints"], selected_pixels)
+        np.testing.assert_array_equal(kwargs["cameraMatrix"], intrinsic)
+        np.testing.assert_allclose(cv2.Rodrigues(kwargs["rvec"])[0], original[:3, :3])
+        np.testing.assert_array_equal(kwargs["tvec"].ravel(), original[:3, 3])
+        assert kwargs["distCoeffs"] is None
+        assert "criteria" not in kwargs
+        rvec, tvec = original_refiner(**kwargs)
+        refined = np.eye(4)
+        refined[:3, :3] = cv2.Rodrigues(rvec)[0]
+        refined[:3, 3] = tvec.ravel()
+        refined_poses.append(refined)
+        return rvec, tvec
+
+    monkeypatch.setattr(cv2, "solvePnPRefineLM", refine)
+    experiment["diagnose_pnp_refinement"](
+        selected_points, selected_pixels, intrinsic, original, gt
+    )
+
+    for array, snapshot in zip(
+        (selected_points, selected_pixels, intrinsic, original, gt),
+        snapshots,
+        strict=True,
+    ):
+        np.testing.assert_array_equal(array, snapshot)
+    diagnostics = capsys.readouterr().out
+    rmses = []
+    for label, pose in zip(
+        ("Original EPnP+RANSAC", "LM-refined", "GT"),
+        (original, refined_poses[0], gt),
+        strict=True,
+    ):
+        residuals = selected_pixels - project_points(
+            selected_points @ pose[:3, :3].T + pose[:3, 3], intrinsic
+        )
+        rmse = np.sqrt(np.mean(np.sum(residuals**2, axis=1)))
+        rmses.append(rmse)
+        assert (
+            f"{label} inlier reprojection: selected={len(indices)}, invalid=0"
+            in diagnostics
+        )
+        line = next(
+            line
+            for line in diagnostics.splitlines()
+            if line.startswith(f"{label} inlier reprojection errors")
+        )
+        assert f"RMSE={rmse:.4f}" in line
+        signed = residuals.mean(axis=0)
+        assert (
+            f"{label} mean signed residual (observed - projected, px): du={signed[0]:.4f}, dv={signed[1]:.4f}"
+            in diagnostics
+        )
+        error_mm = 1000 * np.linalg.norm(pose[:3, 3] - gt[:3, 3])
+        assert (
+            f"{label} translation-vector error against GT (mm): {error_mm:.6f}"
+            in diagnostics
+        )
+        cosine = (np.trace(pose[:3, :3] @ gt[:3, :3].T) - 1) / 2
+        angle = 0 if label == "GT" else np.degrees(np.arccos(np.clip(cosine, -1, 1)))
+        assert f"{label} rotation error against GT (deg): {angle:.6f}" in diagnostics
+    assert rmses[1] < rmses[0]
+
+
+@pytest.mark.parametrize("failure", ["opencv", "nonfinite"])
+def test_refinement_failure_reports_original_and_gt(monkeypatch, capsys, failure):
+    pose = np.eye(4)
+    pose[:3, 3] = [0.003, 0.004, 0]
+    original = pose.copy()
+
+    def refine(**kwargs):
+        kwargs["tvec"][:] = np.nan
+        if failure == "opencv":
+            raise cv2.error("Synthetic refinement failure")
+        return kwargs["rvec"], kwargs["tvec"]
+
+    monkeypatch.setattr(cv2, "solvePnPRefineLM", refine)
+    experiment["diagnose_pnp_refinement"](
+        np.array([[0, 0, 2], [1, 0, 2], [0, 1, 2]], dtype=float),
+        np.array([[0, 0], [0.5, 0], [0, 0.5]]),
+        np.eye(3),
+        pose,
+        np.eye(4),
+    )
+
+    np.testing.assert_array_equal(pose, original)
+    diagnostics = capsys.readouterr().out
+    assert "PnP refinement failed:" in diagnostics
+    assert "LM-refined" not in diagnostics
+    assert (
+        "Original EPnP+RANSAC inlier reprojection: selected=3, invalid=0" in diagnostics
+    )
+    assert "GT inlier reprojection: selected=3, invalid=0" in diagnostics
+    assert (
+        "Original EPnP+RANSAC translation-vector error against GT (mm): 5.000000"
+        in diagnostics
+    )
+
+
+@pytest.mark.parametrize("gt_case", ["missing", "nonrigid", "reflection"])
+def test_refinement_reports_unavailable_gt_metrics(monkeypatch, capsys, gt_case):
+    gt = None if gt_case == "missing" else np.eye(4)
+    if gt_case == "nonrigid":
+        gt[:3, :3] *= 1.1
+    elif gt_case == "reflection":
+        gt[0, 0] = -1
+    monkeypatch.setattr(
+        cv2, "solvePnPRefineLM", lambda **kwargs: (kwargs["rvec"], kwargs["tvec"])
+    )
+
+    experiment["diagnose_pnp_refinement"](
+        np.array([[0, 0, 2], [1, 0, 2], [0, 1, 2]], dtype=float),
+        np.zeros((3, 2)),
+        np.eye(3),
+        np.eye(4),
+        gt,
+    )
+
+    diagnostics = capsys.readouterr().out
+    for label in ("Original EPnP+RANSAC", "LM-refined"):
+        assert f"{label} rotation error against GT (deg): unavailable" in diagnostics
+        if gt_case == "missing":
+            assert (
+                f"{label} translation-vector error against GT (mm): unavailable"
+                in diagnostics
+            )
+        else:
+            assert (
+                f"{label} translation-vector error against GT (mm): 0.000000"
+                in diagnostics
+            )
+    if gt_case == "missing":
+        assert (
+            "PnP refinement GT comparison unavailable: no relative GT pose"
+            in diagnostics
+        )
+    else:
+        assert "GT rotation error against GT (deg): unavailable" in diagnostics
+
+
+@pytest.mark.parametrize("refinement_result", ["success", "opencv", "nonfinite"])
+@pytest.mark.parametrize("diagnose_gt_reprojection", [False, True])
+def test_refinement_flag_preserves_baseline_outputs_and_inlier_selection(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    pose_correspondences,
+    refinement_result,
+    diagnose_gt_reprojection,
+):
+    points, pixels_0, pixels_1, K_R, gt = pose_correspondences
+    rgb = np.zeros((192, 256, 3), dtype=np.uint8)
+    depth = np.full(rgb.shape[:2], np.nan, dtype=np.float32)
+    depth[pixels_0[:, 1].astype(int), pixels_0[:, 0].astype(int)] = points[:, 2]
+    calibration = Calibration(
+        K_R=K_R,
+        K_D=K_R.copy(),
+        T_RD=np.eye(4),
+        rgb_shape=rgb.shape[:2],
+        depth_shape=depth.shape,
+    )
+    original = gt.copy()
+    original[:3, 3] += [0.01, -0.02, 0.03]
+    original_snapshot = original.copy()
+    indices = np.array([9, 3, 7, 0, 6, 2], dtype=np.int32)
+    indices_snapshot = indices.copy()
+    errors = np.linalg.norm(
+        project_points(points[indices] @ original[:3, :3].T + original[:3, 3], K_R)
+        - pixels_1[indices],
+        axis=1,
+    )
+    monkeypatch.setitem(
+        experiment["main"].__globals__,
+        "estimate_relative_pose",
+        lambda *args: (original, indices, errors),
+    )
+    refiner_calls = []
+
+    def refine(**kwargs):
+        refiner_calls.append(kwargs)
+        np.testing.assert_allclose(kwargs["objectPoints"], points[indices])
+        np.testing.assert_array_equal(kwargs["imagePoints"], pixels_1[indices])
+        np.testing.assert_array_equal(kwargs["cameraMatrix"], K_R)
+        np.testing.assert_array_equal(kwargs["tvec"].ravel(), original[:3, 3])
+        np.testing.assert_allclose(cv2.Rodrigues(kwargs["rvec"])[0], original[:3, :3])
+        assert kwargs["distCoeffs"] is None
+        kwargs["objectPoints"][:] = 0
+        kwargs["imagePoints"][:] = 0
+        kwargs["cameraMatrix"][:] = 0
+        kwargs["rvec"][:] = cv2.Rodrigues(gt[:3, :3])[0]
+        kwargs["tvec"][:] = gt[:3, 3].reshape(3, 1)
+        if refinement_result == "opencv":
+            raise cv2.error("Synthetic refinement failure")
+        if refinement_result == "nonfinite":
+            kwargs["tvec"][:] = np.nan
+        return kwargs["rvec"], kwargs["tvec"]
+
+    monkeypatch.setattr(cv2, "solvePnPRefineLM", refine)
+    diagnostic_calls = []
+    original_diagnostic = experiment["print_reprojection_diagnostics"]
+
+    def diagnostic(label, selected_points, selected_pixels, intrinsic, pose):
+        diagnostic_calls.append(
+            (label, selected_points.copy(), selected_pixels.copy(), pose.copy())
+        )
+        original_diagnostic(label, selected_points, selected_pixels, intrinsic, pose)
+
+    monkeypatch.setitem(
+        experiment["main"].__globals__,
+        "print_reprojection_diagnostics",
+        diagnostic,
+    )
+    run_options = {
+        "depth": depth,
+        "calibration": calibration,
+        "reference_poses": (gt, np.eye(4)),
+        "frame_indices": (4, 10),
+        "diagnose_gt_reprojection": diagnose_gt_reprojection,
+    }
+    archive_path = tmp_path / "synthetic_frames4_10_sift.npz"
+    image_path = tmp_path / "synthetic_frames4_10_sift.png"
+    mock_sift_matches(monkeypatch, pixels_0, pixels_1[::-1], range(len(points)))
+    run_experiment(tmp_path, monkeypatch, rgb, rgb, **run_options)
+    with np.load(archive_path) as saved:
+        baseline = {key: saved[key].copy() for key in saved.files}
+    baseline_image = image_path.read_bytes()
+    assert refiner_calls == []
+    assert "PnP refinement" not in capsys.readouterr().out
+    diagnostic_calls.clear()
+
+    mock_sift_matches(monkeypatch, pixels_0, pixels_1[::-1], range(len(points)))
+    run_experiment(
+        tmp_path,
+        monkeypatch,
+        rgb,
+        rgb,
+        **run_options,
+        diagnose_pnp_refinement=True,
+    )
+
+    assert len(refiner_calls) == 1
+    with np.load(archive_path) as saved:
+        assert set(saved.files) == set(baseline)
+        for key, value in baseline.items():
+            np.testing.assert_array_equal(saved[key], value)
+    assert image_path.read_bytes() == baseline_image
+    np.testing.assert_array_equal(original, original_snapshot)
+    np.testing.assert_array_equal(indices, indices_snapshot)
+    expected_labels = (
+        ["Original EPnP+RANSAC", "LM-refined", "GT"]
+        if refinement_result == "success"
+        else ["Original EPnP+RANSAC", "GT"]
+    )
+    comparison_calls = diagnostic_calls[-len(expected_labels) :]
+    assert [call[0] for call in comparison_calls] == expected_labels
+    for label, selected_points, selected_pixels, pose in comparison_calls:
+        np.testing.assert_allclose(selected_points, points[indices])
+        np.testing.assert_array_equal(selected_pixels, pixels_1[indices])
+        np.testing.assert_allclose(
+            pose, original if label == "Original EPnP+RANSAC" else gt
+        )
+    diagnostics = capsys.readouterr().out
+    assert ("PnP refinement failed:" in diagnostics) == (refinement_result != "success")
+
+
 @pytest.mark.parametrize(
     "gt_case", ["rigid", "missing", "nonrigid", "reflection", "near_rigid", "singular"]
 )
@@ -707,8 +990,14 @@ def test_experiment_pose_outputs_and_local_gt_comparison(
 
 @pytest.mark.parametrize("raises", [False, True])
 @pytest.mark.parametrize("diagnose_gt_reprojection", [False, True])
+@pytest.mark.parametrize("diagnose_pnp_refinement", [False, True])
 def test_failed_solver_preserves_correspondences_and_visualization(
-    tmp_path, monkeypatch, capsys, raises, diagnose_gt_reprojection
+    tmp_path,
+    monkeypatch,
+    capsys,
+    raises,
+    diagnose_gt_reprojection,
+    diagnose_pnp_refinement,
 ) -> None:
     def failed_solver(**kwargs):
         if raises:
@@ -723,6 +1012,7 @@ def test_failed_solver_preserves_correspondences_and_visualization(
         rgb,
         rgb,
         diagnose_gt_reprojection=diagnose_gt_reprojection,
+        diagnose_pnp_refinement=diagnose_pnp_refinement,
     )
 
     assert len(points) > 5
@@ -742,3 +1032,5 @@ def test_failed_solver_preserves_correspondences_and_visualization(
             "GT reprojection diagnostic unavailable: no estimated pose" in diagnostics
         )
     assert "mean signed residual" not in diagnostics
+    if diagnose_pnp_refinement:
+        assert "PnP refinement unavailable: no estimated pose" in diagnostics

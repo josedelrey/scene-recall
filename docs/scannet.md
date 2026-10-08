@@ -184,6 +184,16 @@ as infinity in the full selected set's statistics and as failures in the
 percentage. The signed mean is unavailable if any projection is invalid.
 The diagnostic only prints results and preserves the saved outputs.
 
+Use `--diagnose-pnp-refinement` to run `solvePnPRefineLM` from a copy of the
+original EPnP+RANSAC pose, using only its original inlier correspondences and
+OpenCV's default refinement criteria. The original, refined and raw GT poses
+are compared on that same set. Reports include reprojection RMSE, mean signed
+pixel residual, translation-vector error against GT in millimeters and rotation
+error against GT in degrees, using the raw-GT rotation check below. Refinement
+failures and unavailable GT comparisons are explicit. Refinement only adds
+printed diagnostics and preserves the original estimate, inliers and saved
+outputs. Both diagnostic flags can be used together.
+
 Rotation comparison is local to this experiment. The raw relative GT rotation
 is preserved and its Frobenius difference from the estimate is always reported
 when GT is available. An angular error is reported only if `R_gt.T @ R_gt` is
