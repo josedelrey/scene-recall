@@ -25,6 +25,7 @@ def run_experiment(
     calibration=None,
     reference_poses=(None, None),
     frame_indices=None,
+    diagnose_gt_reprojection=False,
 ):
     frame0, frame1 = (0, 1) if frame_indices is None else frame_indices
     if depth is None:
@@ -95,6 +96,7 @@ def run_experiment(
                 if frame_indices is not None
                 else []
             ),
+            *(["--diagnose-gt-reprojection"] if diagnose_gt_reprojection else []),
         ],
     )
     main()
@@ -428,12 +430,80 @@ def test_unusable_pnp_results_are_rejected(monkeypatch, result) -> None:
         )
 
 
+def test_reprojection_diagnostic_uses_forward_pinhole_and_signed_residuals(capsys):
+    points = np.array([[1, 2, 2], [2, 0, 4], [0, -1, 1], [1, 1, 3]], dtype=float)
+    K_R = np.array([[100, 0, 32], [0, 80, 24], [0, 0, 1]], dtype=float)
+    rvec = np.array([0.1, -0.2, 0.3])
+    tvec = np.array([0.2, -0.1, 0.5])
+    pose = np.eye(4)
+    pose[:3, :3] = cv2.Rodrigues(rvec)[0]
+    pose[:3, 3] = tvec
+    projected, _ = cv2.projectPoints(points, rvec, tvec, K_R, None)
+    residuals = np.array([[3, 4], [-1, 0], [0, -2], [3, 0]])
+    observed = projected.reshape(-1, 2) + residuals
+
+    experiment["print_reprojection_diagnostics"](
+        "Estimated", points, observed, K_R, pose
+    )
+
+    diagnostics = capsys.readouterr().out
+    assert "Estimated inlier reprojection: selected=4, invalid=0" in diagnostics
+    assert "mean=2.7500, median=2.5000, RMSE=3.1225" in diagnostics
+    assert "du=1.2500, dv=0.5000" in diagnostics
+    assert "below 3 px (all selected): 50.00%" in diagnostics
+
+
+@pytest.mark.parametrize(
+    "invalid_point",
+    [[0, 0, -1], [0, 0, 0], [np.nan, 0, 1], [0, np.inf, 1], [1e308, 0, 1e-308]],
+)
+def test_invalid_reprojections_remain_in_statistics(capsys, invalid_point):
+    points = np.array([[0, 0, 1], [0, 0, 1], invalid_point], dtype=float)
+    observed = np.array([[0, 0], [3, 4], [0, 0]], dtype=float)
+
+    with np.errstate(all="raise"):
+        experiment["print_reprojection_diagnostics"](
+            "GT", points, observed, np.eye(3), np.eye(4)
+        )
+
+    diagnostics = capsys.readouterr().out
+    assert "GT inlier reprojection: selected=3, invalid=1" in diagnostics
+    assert "invalid reprojection errors count as +inf in statistics" in diagnostics
+    assert "mean=inf, median=5.0000, RMSE=inf" in diagnostics
+    assert "mean signed residual (observed - projected, px): unavailable" in diagnostics
+    assert "below 3 px (all selected): 33.33%" in diagnostics
+
+
+def test_all_invalid_reprojections_are_reported(capsys):
+    with np.errstate(all="raise"):
+        experiment["print_reprojection_diagnostics"](
+            "GT",
+            np.array([[0, 0, 0], [1, 1, -1]]),
+            np.zeros((2, 2)),
+            np.eye(3),
+            np.eye(4),
+        )
+
+    diagnostics = capsys.readouterr().out
+    assert "GT inlier reprojection: selected=2, invalid=2" in diagnostics
+    assert "mean=inf, median=inf, RMSE=inf" in diagnostics
+    assert "mean signed residual (observed - projected, px): unavailable" in diagnostics
+    assert "below 3 px (all selected): 0.00%" in diagnostics
+
+
 @pytest.mark.parametrize(
     "gt_case", ["rigid", "missing", "nonrigid", "reflection", "near_rigid", "singular"]
 )
 @pytest.mark.parametrize("frame_indices", [(0, 1), (4, 10), (10, 4)])
+@pytest.mark.parametrize("diagnose_gt_reprojection", [False, True])
 def test_experiment_pose_outputs_and_local_gt_comparison(
-    tmp_path, monkeypatch, capsys, pose_correspondences, gt_case, frame_indices
+    tmp_path,
+    monkeypatch,
+    capsys,
+    pose_correspondences,
+    gt_case,
+    frame_indices,
+    diagnose_gt_reprojection,
 ) -> None:
     points, pixels_0, pixels_1, K_R, expected = pose_correspondences
     rgb = np.zeros((192, 256, 3), dtype=np.uint8)
@@ -485,6 +555,18 @@ def test_experiment_pose_outputs_and_local_gt_comparison(
         return original_solver(**kwargs)
 
     monkeypatch.setattr(cv2, "solvePnPRansac", solve_pnp)
+    diagnostic_calls = []
+    original_diagnostic = experiment["print_reprojection_diagnostics"]
+
+    def diagnostic(label, selected_points, selected_pixels, intrinsic, pose):
+        diagnostic_calls.append(
+            (label, selected_points.copy(), selected_pixels.copy(), intrinsic, pose)
+        )
+        original_diagnostic(label, selected_points, selected_pixels, intrinsic, pose)
+
+    monkeypatch.setitem(
+        experiment["main"].__globals__, "print_reprojection_diagnostics", diagnostic
+    )
     cv2.setRNGSeed(0)
     run_experiment(
         tmp_path,
@@ -495,6 +577,7 @@ def test_experiment_pose_outputs_and_local_gt_comparison(
         calibration=calibration,
         reference_poses=(T_WC0, T_WC1),
         frame_indices=frame_indices,
+        diagnose_gt_reprojection=diagnose_gt_reprojection,
     )
 
     frame0, frame1 = frame_indices
@@ -515,11 +598,73 @@ def test_experiment_pose_outputs_and_local_gt_comparison(
             assert "T_C1C0_gt" not in saved
         else:
             np.testing.assert_allclose(saved["T_C1C0_gt"], gt, atol=1e-14)
+        expected_keys = {
+            "points_C0",
+            "pixels_0",
+            "pixels_1",
+            "pose_status",
+            "T_C1C0",
+            "inlier_indices",
+            "inlier_reprojection_errors_px",
+        }
+        if gt_case not in ("missing", "singular"):
+            expected_keys.add("T_C1C0_gt")
+        assert set(saved.files) == expected_keys
 
     np.testing.assert_array_equal(T_WC0, original_T_WC0)
     if T_WC1 is not None:
         np.testing.assert_array_equal(T_WC1, original_T_WC1)
     diagnostics = capsys.readouterr().out
+    if diagnose_gt_reprojection:
+        expected_labels = ["Estimated"]
+        if gt_case not in ("missing", "singular"):
+            expected_labels.append("GT")
+        else:
+            assert (
+                "GT reprojection diagnostic unavailable: no relative GT pose"
+                in diagnostics
+            )
+        assert [call[0] for call in diagnostic_calls] == expected_labels
+        for (
+            label,
+            selected_points,
+            selected_pixels,
+            intrinsic,
+            pose,
+        ) in diagnostic_calls:
+            np.testing.assert_allclose(selected_points, points[valid_order[indices]])
+            np.testing.assert_array_equal(
+                selected_pixels, pixels_1[valid_order[indices]]
+            )
+            np.testing.assert_array_equal(intrinsic, K_R)
+            np.testing.assert_allclose(pose, estimated if label == "Estimated" else gt)
+            residuals = selected_pixels - project_points(
+                selected_points @ pose[:3, :3].T + pose[:3, 3], K_R
+            )
+            diagnostic_errors = np.linalg.norm(residuals, axis=1)
+            assert (
+                f"{label} inlier reprojection: selected={len(indices)}, invalid=0"
+                in diagnostics
+            )
+            assert (
+                f"{label} inlier reprojection errors (px): "
+                f"mean={diagnostic_errors.mean():.4f}, "
+                f"median={np.median(diagnostic_errors):.4f}, "
+                f"RMSE={np.sqrt(np.mean(diagnostic_errors**2)):.4f}"
+            ) in diagnostics
+            signed = residuals.mean(axis=0)
+            assert (
+                f"{label} mean signed residual (observed - projected, px): "
+                f"du={signed[0]:.4f}, dv={signed[1]:.4f}"
+            ) in diagnostics
+            assert (
+                f"{label} reprojection error below 3 px (all selected): "
+                f"{100 * np.count_nonzero(diagnostic_errors < 3) / len(indices):.2f}%"
+            ) in diagnostics
+    else:
+        assert diagnostic_calls == []
+        assert "mean signed residual" not in diagnostics
+        assert "reprojection error below 3 px" not in diagnostics
     assert f"Source RGB frames: {frame0} -> {frame1}" in diagnostics
     assert f"3D-2D correspondences: {len(valid_order)}" in diagnostics
     assert f"RANSAC inliers: {len(indices)}" in diagnostics
@@ -561,8 +706,9 @@ def test_experiment_pose_outputs_and_local_gt_comparison(
 
 
 @pytest.mark.parametrize("raises", [False, True])
+@pytest.mark.parametrize("diagnose_gt_reprojection", [False, True])
 def test_failed_solver_preserves_correspondences_and_visualization(
-    tmp_path, monkeypatch, capsys, raises
+    tmp_path, monkeypatch, capsys, raises, diagnose_gt_reprojection
 ) -> None:
     def failed_solver(**kwargs):
         if raises:
@@ -571,7 +717,13 @@ def test_failed_solver_preserves_correspondences_and_visualization(
 
     monkeypatch.setattr(cv2, "solvePnPRansac", failed_solver)
     rgb = np.random.default_rng(0).integers(0, 256, (192, 256, 3), dtype=np.uint8)
-    points, _, _, visualization = run_experiment(tmp_path, monkeypatch, rgb, rgb)
+    points, _, _, visualization = run_experiment(
+        tmp_path,
+        monkeypatch,
+        rgb,
+        rgb,
+        diagnose_gt_reprojection=diagnose_gt_reprojection,
+    )
 
     assert len(points) > 5
     assert visualization.shape == (192, 512, 3)
@@ -585,3 +737,8 @@ def test_failed_solver_preserves_correspondences_and_visualization(
     assert "Pose estimation unavailable:" in diagnostics
     assert "RANSAC inliers: 0" in diagnostics
     assert "GT comparison unavailable: no estimated pose" in diagnostics
+    if diagnose_gt_reprojection:
+        assert (
+            "GT reprojection diagnostic unavailable: no estimated pose" in diagnostics
+        )
+    assert "mean signed residual" not in diagnostics

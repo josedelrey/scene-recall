@@ -174,6 +174,16 @@ and their vector difference norm in meters. Missing reference poses or a
 singular target reference pose make the GT comparison unavailable without
 discarding the estimate.
 
+Use `--diagnose-gt-reprojection` to reproject exactly the returned RANSAC inliers
+with both the estimated transform and raw relative GT, using the same `K_R`
+pinhole model and observed target pixels. Each pose reports mean, median and
+RMSE pixel error, mean signed residual `(du, dv)` as observed minus projected,
+and the percentage with error strictly below 3 px. Nonfinite projections and
+points with nonpositive target depth are counted as invalid. Their errors count
+as infinity in the full selected set's statistics and as failures in the
+percentage. The signed mean is unavailable if any projection is invalid.
+The diagnostic only prints results and preserves the saved outputs.
+
 Rotation comparison is local to this experiment. The raw relative GT rotation
 is preserved and its Frobenius difference from the estimate is always reported
 when GT is available. An angular error is reported only if `R_gt.T @ R_gt` is

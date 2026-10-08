@@ -44,6 +44,45 @@ def estimate_relative_pose(
     return T_C1C0, inlier_indices, errors
 
 
+def print_reprojection_diagnostics(
+    label: str,
+    points_C0: np.ndarray,
+    pixels_1: np.ndarray,
+    K_R: np.ndarray,
+    T_C1C0: np.ndarray,
+) -> None:
+    """Report a pose on the unchanged RANSAC-selected correspondence set."""
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        points_C1 = points_C0 @ T_C1C0[:3, :3].T + T_C1C0[:3, 3]
+        projected = project_points(points_C1, K_R)
+        residuals = pixels_1 - projected
+        valid = np.isfinite(residuals).all(axis=1)
+        # Invalid projections remain failures in the full selected population.
+        errors = np.hypot(residuals[:, 0], residuals[:, 1])
+        errors[~valid] = np.inf
+        mean = errors.mean()
+        median = np.median(errors)
+        rmse = np.sqrt(np.mean(errors**2))
+        signed_mean = residuals.mean(axis=0) if valid.all() else None
+    print(f"{label} inlier reprojection: selected={len(errors)}, invalid={sum(~valid)}")
+    if not valid.all():
+        print(f"{label} invalid reprojection errors count as +inf in statistics")
+    print(
+        f"{label} inlier reprojection errors (px): "
+        f"mean={mean:.4f}, median={median:.4f}, RMSE={rmse:.4f}"
+    )
+    signed_summary = (
+        f"du={signed_mean[0]:.4f}, dv={signed_mean[1]:.4f}"
+        if signed_mean is not None
+        else "unavailable (invalid projections)"
+    )
+    print(f"{label} mean signed residual (observed - projected, px): {signed_summary}")
+    print(
+        f"{label} reprojection error below 3 px (all selected): "
+        f"{100 * np.count_nonzero(errors < 3) / len(errors):.2f}%"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sens-path", type=Path, required=True)
@@ -51,6 +90,7 @@ def main() -> None:
     parser.add_argument("--frame1", type=int, default=1)
     parser.add_argument("--ratio", type=float, default=0.75)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
+    parser.add_argument("--diagnose-gt-reprojection", action="store_true")
     args = parser.parse_args()
     if not 0 < args.ratio < 1:
         parser.error("--ratio must be finite and strictly between 0 and 1")
@@ -137,6 +177,8 @@ def main() -> None:
         print("Inlier ratio (inliers / correspondences): 0.0000")
         print("Inlier reprojection errors: unavailable")
         print("GT comparison unavailable: no estimated pose")
+        if args.diagnose_gt_reprojection:
+            print("GT reprojection diagnostic unavailable: no estimated pose")
         results["pose_status"] = np.array(str(error))
         results["inlier_indices"] = np.empty(0, dtype=np.int32)
         results["inlier_reprojection_errors_px"] = np.empty(0, dtype=np.float64)
@@ -210,6 +252,23 @@ def main() -> None:
                         "Rotation angle unavailable: raw GT relative rotation fails "
                         "orthonormality or determinant +1 check at atol=1e-4"
                     )
+
+        if args.diagnose_gt_reprojection:
+            inlier_points = points_C0[inlier_indices]
+            inlier_pixels = pixels_1[inlier_indices]
+            print_reprojection_diagnostics(
+                "Estimated", inlier_points, inlier_pixels, calibration.K_R, T_C1C0
+            )
+            if "T_C1C0_gt" in results:
+                print_reprojection_diagnostics(
+                    "GT",
+                    inlier_points,
+                    inlier_pixels,
+                    calibration.K_R,
+                    results["T_C1C0_gt"],
+                )
+            else:
+                print("GT reprojection diagnostic unavailable: no relative GT pose")
 
     output_dir = args.output_dir.expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
