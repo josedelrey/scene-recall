@@ -1,5 +1,9 @@
 # ScanNet reading and point-cloud export
 
+For camera trajectories from consecutive observations, see
+[sequential RGB-D odometry and evaluation](odometry.md). The original two-frame
+SIFT experiment below remains available with its historical settings.
+
 ## Sequential reading
 
 Use `ScanNetReader` to process a long capture one observation at a time:

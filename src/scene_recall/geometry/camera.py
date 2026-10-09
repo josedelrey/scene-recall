@@ -56,3 +56,60 @@ def project_points(points: np.ndarray, K: np.ndarray) -> np.ndarray:
     xy = np.full(points.shape[:-1] + (2,), np.nan)
     np.divide(points[..., :2], points[..., 2:3], out=xy, where=valid)
     return xy * [K[0, 0], K[1, 1]] + [K[0, 2], K[1, 2]]
+
+
+def reject_depth_edges(depth: np.ndarray, threshold_m: float) -> np.ndarray:
+    """Reject borders, holes, and 3x3 depth ranges above threshold_m.
+
+    This conservative surface test preserves the input and does not interpolate
+    across discontinuities. The threshold is an absolute z-depth range in meters.
+    """
+    if not np.isfinite(threshold_m) or threshold_m <= 0:
+        raise ValueError("depth edge threshold must be finite and positive")
+    windows = np.lib.stride_tricks.sliding_window_view(
+        np.pad(depth, 1, constant_values=np.nan), (3, 3)
+    )
+    valid = np.isfinite(windows).all(axis=(-2, -1)) & (windows > 0).all(axis=(-2, -1))
+    continuous = (
+        windows.max(axis=(-2, -1)) - windows.min(axis=(-2, -1))
+    ) <= threshold_m
+    return np.where(valid & continuous, depth, np.nan).astype(depth.dtype)
+
+
+def register_depth_to_rgb(
+    depth: np.ndarray,
+    K_D: np.ndarray,
+    K_R: np.ndarray,
+    T_RD: np.ndarray,
+    rgb_shape: tuple[int, int],
+    valid_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """Splat depth into the RGB grid with a nearest-pixel z-buffer.
+
+    Output is RGB-frame z-depth. The nearest positive surface wins collisions.
+    Unobserved pixels remain NaN. Optional native-grid validity is applied after
+    visibility selection, so rejected foreground cannot expose background points.
+    This registration neither fills holes nor models subpixel surface extent.
+    """
+    points_R = transform_points(backproject_depth(depth, K_D), T_RD).reshape(-1, 3)
+    pixels = project_points(points_R, K_R)
+    height, width = rgb_shape
+    valid = (
+        np.isfinite(pixels).all(axis=1)
+        & (pixels[:, 0] >= 0)
+        & (pixels[:, 0] <= width - 1)
+        & (pixels[:, 1] >= 0)
+        & (pixels[:, 1] <= height - 1)
+    )
+    indices = np.floor(pixels[valid] + 0.5).astype(np.intp)
+    registered = np.full(height * width, np.inf)
+    np.minimum.at(registered, indices[:, 1] * width + indices[:, 0], points_R[valid, 2])
+    if valid_mask is not None:
+        if valid_mask.shape != depth.shape or valid_mask.dtype != np.dtype(bool):
+            raise ValueError("valid mask must be boolean and match the depth grid")
+        flat_indices = indices[:, 1] * width + indices[:, 0]
+        foreground = points_R[valid, 2] <= registered[flat_indices] + 1e-6
+        rejected = foreground & ~valid_mask.reshape(-1)[valid]
+        registered[flat_indices[rejected]] = np.nan
+    registered[~np.isfinite(registered)] = np.nan
+    return registered.reshape(rgb_shape)

@@ -8,40 +8,14 @@ import numpy as np
 
 from scene_recall.datasets.scannet import ScanNetReader
 from scene_recall.geometry.camera import backproject_rgb_pixels, project_points
+from scene_recall.odometry.sparse import ransac_pnp
 
 
 def estimate_relative_pose(
     points_C0: np.ndarray, pixels_1: np.ndarray, K_R: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return T_C1C0, correspondence inlier indices, and inlier errors in pixels."""
-    # OpenCV switches to P3P with exactly four inputs. Keep this baseline EPNP.
-    if len(points_C0) < 5:
-        raise ValueError("EPNP RANSAC requires at least 5 correspondences")
-    success, rvec, tvec, inliers = cv2.solvePnPRansac(
-        objectPoints=np.ascontiguousarray(points_C0, dtype=np.float64),
-        imagePoints=np.ascontiguousarray(pixels_1, dtype=np.float64),
-        cameraMatrix=K_R,
-        distCoeffs=None,
-        iterationsCount=100,
-        reprojectionError=3.0,
-        confidence=0.99,
-        flags=cv2.SOLVEPNP_EPNP,
-    )
-    if not success or inliers is None or inliers.size == 0:
-        raise RuntimeError("solvePnPRansac did not return a pose with inliers")
-    if not np.isfinite(rvec).all() or not np.isfinite(tvec).all():
-        raise RuntimeError("solvePnPRansac returned a nonfinite pose")
-
-    # Object frame is C0 and the target image is C1, so no inversion is needed.
-    T_C1C0 = np.eye(4, dtype=np.float64)
-    T_C1C0[:3, :3] = cv2.Rodrigues(rvec)[0]
-    T_C1C0[:3, 3] = tvec.reshape(3)
-    inlier_indices = inliers.reshape(-1)
-    projected, _ = cv2.projectPoints(points_C0[inlier_indices], rvec, tvec, K_R, None)
-    errors = np.linalg.norm(projected.reshape(-1, 2) - pixels_1[inlier_indices], axis=1)
-    if not np.isfinite(errors).all():
-        raise RuntimeError("PnP inlier reprojection errors are nonfinite")
-    return T_C1C0, inlier_indices, errors
+    return ransac_pnp(points_C0, pixels_1, K_R)
 
 
 def print_reprojection_diagnostics(
