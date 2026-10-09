@@ -186,12 +186,16 @@ def evaluate_trajectory(
     pair_errors = []
     initial_errors = []
     final_errors = []
+    geometric_initial_errors = []
+    geometric_final_errors = []
     for index, row in enumerate(rows[1:], start=1):
         entry = {
             "source_frame": index - 1,
             "target_frame": index,
             "initial": None,
             "final": None,
+            "candidate": None,
+            "ransac": None,
         }
         if (
             reference_valid[index - 1]
@@ -208,10 +212,19 @@ def evaluate_trajectory(
                     entry["initial"] = pose_error(row.pair.initial_T_C1C0, reference)
                 if row.pair.T_C1C0 is not None:
                     entry["final"] = pose_error(row.pair.T_C1C0, reference)
+                for name, pose in (
+                    ("candidate", row.pair.candidate_T_C1C0),
+                    ("ransac", row.pair.ransac_T_C1C0),
+                ):
+                    if pose is not None and is_rigid(pose):
+                        entry[name] = pose_error(pose, reference)
                 # Compare refinement on exactly the same accepted population.
                 if entry["initial"] is not None and entry["final"] is not None:
                     initial_errors.append(entry["initial"])
                     final_errors.append(entry["final"])
+                    if row.pair.diagnostics.get("geometric_refinement") == "refined":
+                        geometric_initial_errors.append(entry["initial"])
+                        geometric_final_errors.append(entry["final"])
         pair_errors.append(entry)
     failures = sum(row.status == "lost" for row in rows)
     transitions = max(0, len(rows) - 1)
@@ -236,6 +249,18 @@ def evaluate_trajectory(
         "refinement_comparison_accepted_pairs": {
             "initial": _summarize_errors(initial_errors),
             "final": _summarize_errors(final_errors),
+        },
+        "geometric_refinement_comparison": {
+            "initial": _summarize_errors(geometric_initial_errors),
+            "final": _summarize_errors(geometric_final_errors),
+            "translation_improved_pairs": sum(
+                a[0] > b[0]
+                for a, b in zip(geometric_initial_errors, geometric_final_errors)
+            ),
+            "rotation_improved_pairs": sum(
+                a[1] > b[1]
+                for a, b in zip(geometric_initial_errors, geometric_final_errors)
+            ),
         },
         "pair_errors_m_deg": pair_errors,
     }

@@ -25,7 +25,9 @@ class PairEstimate:
     """A forward C_D0 -> C_D1 estimate, independent of reference poses.
 
     A missing T_C1C0 represents a failed transition. initial_T_C1C0 optionally
-    retains the RANSAC pose before refinement and quality checks.
+    retains the backend initialization before refinement and quality checks.
+    For hybrid this is the accepted sparse pose, with RANSAC saved separately.
+    candidate_T_C1C0 preserves an ICP candidate even when it is rejected.
     Diagnostics contain JSON-compatible scalar measurements and failure details.
     """
 
@@ -33,6 +35,8 @@ class PairEstimate:
     reason: str | None = None
     initial_T_C1C0: np.ndarray | None = None
     diagnostics: dict[str, int | float | str | None] = field(default_factory=dict)
+    candidate_T_C1C0: np.ndarray | None = None
+    ransac_T_C1C0: np.ndarray | None = None
 
 
 class PairwiseBackend(Protocol):
@@ -91,6 +95,8 @@ def track_observations(
                     "backend returned a nonrigid pose",
                     pair.initial_T_C1C0,
                     pair.diagnostics,
+                    pair.candidate_T_C1C0,
+                    pair.ransac_T_C1C0,
                 )
             if pair.T_C1C0 is None:
                 segment += 1

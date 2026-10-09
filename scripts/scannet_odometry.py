@@ -1,9 +1,10 @@
-"""Run consecutive sparse RGB-D odometry and reference evaluation on ScanNet."""
+"""Run selectable RGB-D odometry and reference evaluation on ScanNet."""
 
 import argparse
 import csv
 import hashlib
 import json
+import os
 import platform
 import sys
 from dataclasses import asdict
@@ -16,6 +17,8 @@ import numpy as np
 import scene_recall
 from scene_recall.datasets.scannet import ScanNetReader
 from scene_recall.odometry.evaluation import evaluate_trajectory
+from scene_recall.odometry.hybrid import HybridConfig, HybridRGBDBackend
+from scene_recall.odometry.icp import DepthICPBackend, ICPConfig
 from scene_recall.odometry.pipeline import TrajectoryFrame, track_observations
 from scene_recall.odometry.sparse import SparseConfig, SparseRGBDBackend
 
@@ -53,6 +56,12 @@ def save_run(
         T_C1C0=_pose_array(
             None if row.pair is None else row.pair.T_C1C0 for row in rows
         ),
+        candidate_T_C1C0=_pose_array(
+            None if row.pair is None else row.pair.candidate_T_C1C0 for row in rows
+        ),
+        ransac_T_C1C0=_pose_array(
+            None if row.pair is None else row.pair.ransac_T_C1C0 for row in rows
+        ),
         initial_T_C1C0=_pose_array(
             None if row.pair is None else row.pair.initial_T_C1C0 for row in rows
         ),
@@ -80,6 +89,10 @@ def save_run(
         "refinement",
         "inlier_rmse_px",
     ]
+    columns += sorted(
+        {key for row in rows if row.pair is not None for key in row.pair.diagnostics}
+        - set(columns)
+    )
     with (output / "frames.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, columns, extrasaction="ignore")
         writer.writeheader()
@@ -120,6 +133,17 @@ def main() -> None:
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--stop", type=int)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--backend", choices=("sparse", "icp", "hybrid"), default="sparse"
+    )
+    parser.add_argument("--icp-max-iterations", type=int, default=35)
+    parser.add_argument("--icp-min-support", type=int, default=30)
+    parser.add_argument("--icp-min-support-fraction", type=float, default=0.2)
+    parser.add_argument(
+        "--hybrid-refinement-failure", choices=("sparse", "lost"), default="sparse"
+    )
+    parser.add_argument("--hybrid-max-correction-m", type=float, default=0.1)
+    parser.add_argument("--hybrid-max-correction-deg", type=float, default=5.0)
     parser.add_argument("--ratio", type=float, default=0.75)
     parser.add_argument("--iterations", type=int, default=2000)
     parser.add_argument("--confidence", type=float, default=0.999)
@@ -160,6 +184,25 @@ def main() -> None:
             if args.no_depth_edge_filter
             else args.depth_edge_threshold_m,
         )
+        icp_config = ICPConfig(
+            max_iterations=args.icp_max_iterations,
+            min_support=args.icp_min_support,
+            min_support_fraction=args.icp_min_support_fraction,
+        )
+        if args.backend == "sparse":
+            backend = SparseRGBDBackend(config)
+        elif args.backend == "icp":
+            config = icp_config
+            backend = DepthICPBackend(config)
+        else:
+            config = HybridConfig(
+                config,
+                icp_config,
+                args.hybrid_refinement_failure,
+                args.hybrid_max_correction_m,
+                args.hybrid_max_correction_deg,
+            )
+            backend = HybridRGBDBackend(config)
     except (TypeError, ValueError) as error:
         parser.error(str(error))
     output = args.output_dir.expanduser()
@@ -180,7 +223,7 @@ def main() -> None:
         sequence_id, source_count = reader.sequence_id, reader.frame_count
         rows = []
         failures = 0
-        for row in track_observations(reader, calibration, SparseRGBDBackend(config)):
+        for row in track_observations(reader, calibration, backend):
             rows.append(row)
             failures += row.status == "lost"
             if len(rows) % 100 == 0:
@@ -191,8 +234,13 @@ def main() -> None:
     elapsed = perf_counter() - started
     evaluation = evaluate_trajectory(rows, args.rpe_intervals)
     report = {
-        "format_version": 1,
-        "backend": "sift_rgbd_pnp",
+        "format_version": 2,
+        "backend": args.backend,
+        "initial_pose_stage": {
+            "sparse": "ransac",
+            "icp": None,
+            "hybrid": "accepted_sparse",
+        }[args.backend],
         "config": asdict(config),
         "source": {
             "sequence_id": sequence_id,
@@ -215,6 +263,8 @@ def main() -> None:
             "numpy": np.__version__,
             "opencv": cv2.__version__,
             "opencv_threads": cv2.getNumThreads(),
+            "openblas_num_threads_env": os.environ.get("OPENBLAS_NUM_THREADS"),
+            "omp_num_threads_env": os.environ.get("OMP_NUM_THREADS"),
             "code_sha256": code_fingerprint,
             "invocation": sys.argv,
         },

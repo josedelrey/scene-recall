@@ -19,13 +19,15 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from scene_recall.datasets.scannet import ScanNetReader
-from scene_recall.geometry.camera import (
-    backproject_depth,
-    project_points,
-    reject_depth_edges,
-    transform_points,
-)
+from scene_recall.geometry.camera import transform_points
 from scene_recall.odometry.evaluation import pose_error
+from scene_recall.odometry.icp import (
+    correspondences,
+    huber,
+    increment,
+    linearization,
+    make_cloud,
+)
 from scene_recall.odometry.pipeline import is_rigid
 
 FACTORS = (4, 2, 1)
@@ -45,125 +47,6 @@ def stats(values):
         "rmse": float(np.sqrt(np.mean(values**2))),
         "p95": float(np.quantile(values, 0.95)),
     }
-
-
-def huber(residual):
-    absolute = np.abs(residual)
-    return np.where(
-        absolute <= HUBER_M, 0.5 * residual**2, HUBER_M * (absolute - 0.5 * HUBER_M)
-    )
-
-
-def increment(update, scale=1.0):
-    result = np.eye(4)
-    result[:3, :3] = cv2.Rodrigues(np.asarray(update[3:], float))[0]
-    result[:3, 3] = np.asarray(update[:3]) * scale
-    return result
-
-
-def make_cloud(depth, K, factor=1, normal_radius_native=3):
-    """Retain original z-depth samples and use smoothed depth only for normals.
-
-    Subsampling starts at native pixel zero, so every entry of K's first two
-    rows is divided by factor. Missing depth remains unavailable. Normals use
-    central differences of a bilateral normal-estimation image.
-    """
-    depth = reject_depth_edges(depth, 0.05)[::factor, ::factor].copy()
-    depth[(depth < 0.3) | (depth > 6.0)] = np.nan
-    intrinsic = K.copy()
-    intrinsic[:2] /= factor
-    points = backproject_depth(depth, intrinsic).astype(np.float64)
-    smooth = cv2.bilateralFilter(np.nan_to_num(depth).astype(np.float32), 5, 0.02, 2)
-    smooth[~np.isfinite(depth)] = np.nan
-    normal_points = backproject_depth(smooth, intrinsic)
-    radius = max(1, normal_radius_native // factor)
-    normals = np.full(points.shape, np.nan)
-    du = (
-        normal_points[radius:-radius, 2 * radius :]
-        - normal_points[radius:-radius, : -2 * radius]
-    )
-    dv = (
-        normal_points[2 * radius :, radius:-radius]
-        - normal_points[: -2 * radius, radius:-radius]
-    )
-    cross = np.cross(du, dv)
-    length = np.linalg.norm(cross, axis=2, keepdims=True)
-    np.divide(cross, length, out=cross, where=length > 1e-12)
-    cross[length[..., 0] <= 1e-12] = np.nan
-    normals[radius:-radius, radius:-radius] = cross
-    valid = np.isfinite(points).all(axis=2) & np.isfinite(normals).all(axis=2)
-    normals[~valid] = np.nan
-    v, u = np.indices(depth.shape)
-    sample = valid & (u % 2 == 0) & (v % 2 == 0)
-    # Native 16x16-pixel tiles are split without referring to any pose.
-    heldout = ((u * factor // 16 + v * factor // 16) % 2) == 1
-    return {
-        "points": points.reshape(-1, 3),
-        "normals": normals.reshape(-1, 3),
-        "K": intrinsic,
-        "shape": depth.shape,
-        "factor": factor,
-        "train": np.flatnonzero(sample & ~heldout),
-        "test": np.flatnonzero(sample & heldout),
-        "all": np.flatnonzero(sample),
-        "valid_normal_count": int(valid.sum()),
-    }
-
-
-def correspondences(source, target, pose, indices, distance=0.05):
-    """Project each selected source point onto the nearest target pixel.
-
-    Support requires positive visible projection, valid source/target normals,
-    point distance within the gate, and normals agreeing within 45 degrees.
-    Returned source indices always refer to the same source depth array.
-    """
-    moved = transform_points(source["points"][indices], pose)
-    pixels = project_points(moved, target["K"])
-    h, w = target["shape"]
-    valid = (
-        np.isfinite(pixels).all(axis=1)
-        & (pixels[:, 0] >= 0)
-        & (pixels[:, 0] <= w - 1)
-        & (pixels[:, 1] >= 0)
-        & (pixels[:, 1] <= h - 1)
-    )
-    selected = indices[valid]
-    moved = moved[valid]
-    uv = np.floor(pixels[valid] + 0.5).astype(int)
-    target_indices = uv[:, 1] * w + uv[:, 0]
-    fixed = target["points"][target_indices]
-    normal = target["normals"][target_indices]
-    source_normal = source["normals"][selected] @ pose[:3, :3].T
-    valid = (
-        np.isfinite(fixed).all(axis=1)
-        & np.isfinite(normal).all(axis=1)
-        & (np.linalg.norm(moved - fixed, axis=1) <= distance)
-        & (np.sum(source_normal * normal, axis=1) >= np.cos(np.pi / 4))
-    )
-    selected, moved, fixed, normal, target_indices = (
-        x[valid] for x in (selected, moved, fixed, normal, target_indices)
-    )
-    residual = np.sum((moved - fixed) * normal, axis=1)
-    return {
-        "source_ids": selected,
-        "target_ids": target_indices,
-        "moved": moved,
-        "fixed": fixed,
-        "normals": normal,
-        "residual": residual,
-    }
-
-
-def linearization(correspondence, scale):
-    normals = correspondence["normals"]
-    J = np.column_stack([normals * scale, np.cross(correspondence["moved"], normals)])
-    residual = correspondence["residual"]
-    weights = np.minimum(1, HUBER_M / np.maximum(np.abs(residual), 1e-12))
-    H = J.T @ (weights[:, None] * J)
-    gradient = J.T @ (weights * residual)
-    eigenvalues, eigenvectors = np.linalg.eigh(H)
-    rank = int(np.count_nonzero(eigenvalues > max(eigenvalues[-1] * 1e-8, 1e-12)))
-    return J, H, gradient, eigenvalues, eigenvectors, rank
 
 
 def register(source_pyramid, target_pyramid, initial, max_iterations=35):
@@ -634,6 +517,9 @@ def main():
     files = [
         Path(__file__),
         Path("src/scene_recall/geometry/camera.py"),
+        Path("src/scene_recall/odometry/icp.py"),
+        Path("src/scene_recall/odometry/pipeline.py"),
+        Path("src/scene_recall/odometry/evaluation.py"),
         Path("src/scene_recall/datasets/scannet.py"),
     ]
     report = {
