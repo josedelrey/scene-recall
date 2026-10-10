@@ -20,7 +20,12 @@ def main():
     args = parser.parse_args()
     data = json.loads((args.comparison_dir / "comparison.json").read_text())
     ranges = data["ranges"]
-    labels = [f"{row['source']['start']}–{row['source']['stop']}" for row in ranges]
+    sequence_ids = list(dict.fromkeys(row["source"]["sequence_id"] for row in ranges))
+    labels = [
+        (f"{row['source']['sequence_id']}\n" if len(sequence_ids) > 1 else "")
+        + f"{row['source']['start']}–{row['source']['stop']}"
+        for row in ranges
+    ]
     plt.rcParams.update(
         {"font.size": 10, "axes.spines.top": False, "axes.spines.right": False}
     )
@@ -71,7 +76,7 @@ def main():
         ax.grid(axis="y", alpha=0.15)
         ax.set_axisbelow(True)
     axes[0, 0].legend(frameon=False)
-    fig.suptitle("SceneRecall RGB-D backends · scene0000_00", fontsize=16)
+    fig.suptitle("SceneRecall RGB-D backends · " + ", ".join(sequence_ids), fontsize=16)
     fig.supxlabel(
         "Source frame ranges · × = full-clip drift unavailable after tracking loss"
     )
@@ -86,15 +91,23 @@ def main():
         and item["depth_rmse_final_m"] is not None
     ]
     fig, axes = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
-    for dimension, ax in enumerate(axes):
-        for boundary, color, label in (
+    groups = (
+        (
             (False, "#3167a8", "Other targets"),
             (True, "#d47d20", "Target index divisible by 10"),
-        ):
+        )
+        if all(
+            row["source"].get("dataset", "scannet_v2") == "scannet_v2" for row in ranges
+        )
+        else ((None, "#3167a8", "Successful refinements"),)
+    )
+    for dimension, ax in enumerate(axes):
+        for boundary, color, label in groups:
             selected = [
                 item
                 for item in outcomes
-                if (item["source_target_index"] % 10 == 0) == boundary
+                if boundary is None
+                or (item["source_target_index"] % 10 == 0) == boundary
             ]
             ax.scatter(
                 [

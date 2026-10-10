@@ -191,3 +191,58 @@ def test_empty_and_unreferenced_trajectories_produce_unavailable_metrics():
         report["continuous_trajectory"]["anchored_errors"]["translation_m"]["count"]
         == 0
     )
+
+
+def test_time_rpe_uses_elapsed_time_and_excludes_segment_breaks():
+    from dataclasses import replace
+
+    from scene_recall.odometry.evaluation import timestamp_pairs
+
+    rows = [
+        replace(row, timestamp=stamp)
+        for row, stamp in zip(trajectory(), [0.0, 0.08, 0.21, 0.3, 0.43])
+    ]
+    pairs, status = timestamp_pairs([row.timestamp for row in rows], 0.2, 0.02)
+    assert status == "available"
+    assert pairs == [(0, 2), (1, 3), (2, 4)]
+    metrics = evaluate_trajectory(rows, time_intervals_s=[0.2], time_tolerance_s=0.02)[
+        "rpe_by_time_interval_s"
+    ]["0.2"]
+    assert metrics["translation_m"]["count"] == len(pairs)
+    assert metrics["translation_m"]["rmse"] < 1e-14
+    rows[2:] = [replace(row, segment_id=1) for row in rows[2:]]
+    metrics = evaluate_trajectory(rows, time_intervals_s=[0.2], time_tolerance_s=0.02)[
+        "rpe_by_time_interval_s"
+    ]["0.2"]
+    assert metrics["excluded_cross_segment"] == 2
+
+
+@pytest.mark.parametrize(
+    "stamps,status",
+    [
+        ([None, None], "unavailable_timestamps"),
+        ([0.0, 0.0], "nonmonotonic_or_invalid_timestamps"),
+        ([1.0, 0.0], "nonmonotonic_or_invalid_timestamps"),
+        ([0.0, np.nan], "nonmonotonic_or_invalid_timestamps"),
+    ],
+)
+def test_time_rpe_marks_unusable_clocks(stamps, status):
+    from scene_recall.odometry.evaluation import timestamp_pairs
+
+    assert timestamp_pairs(stamps, 1, 0.02) == ([], status)
+
+
+@pytest.mark.parametrize(
+    "interval,tolerance", [(0, 0.02), (np.nan, 0.02), (1, -1), (1, np.inf)]
+)
+def test_time_rpe_rejects_invalid_settings(interval, tolerance):
+    with pytest.raises(ValueError):
+        evaluate_trajectory([], time_intervals_s=[interval], time_tolerance_s=tolerance)
+
+
+def test_time_rpe_nearest_endpoint_ties_and_tolerance():
+    from scene_recall.odometry.evaluation import timestamp_pairs
+
+    assert timestamp_pairs([0.0, 0.125, 0.375], 0.25, 0.125)[0][0] == (0, 1)
+    assert timestamp_pairs([0.0, 0.1, 1.0], 0.5, 0.02)[0] == []
+    assert timestamp_pairs([0.0, 0.5, 1.0], 0.5, 0)[0] == [(0, 1), (1, 2)]

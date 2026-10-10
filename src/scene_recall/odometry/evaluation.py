@@ -74,8 +74,44 @@ def _align_positions(estimated: np.ndarray, reference: np.ndarray) -> np.ndarray
     return alignment
 
 
+def timestamp_pairs(
+    timestamps: Iterable[float | None], interval_s: float, tolerance_s: float
+) -> tuple[list[tuple[int, int]], str]:
+    """Choose a nearest later endpoint per source on a finite increasing clock.
+
+    Ties prefer the earlier endpoint. Missing or nonmonotonic clocks disable
+    time-based evaluation. Frame-based evaluation remains available.
+    """
+    if not np.isfinite(interval_s) or interval_s <= 0:
+        raise ValueError("time RPE intervals must be finite and positive")
+    if not np.isfinite(tolerance_s) or tolerance_s < 0:
+        raise ValueError("time RPE tolerance must be finite and nonnegative")
+    values = list(timestamps)
+    if any(value is None for value in values):
+        return [], "unavailable_timestamps"
+    stamps = np.array(values, dtype=np.float64)
+    if not np.isfinite(stamps).all() or np.any(np.diff(stamps) <= 0):
+        return [], "nonmonotonic_or_invalid_timestamps"
+    pairs = []
+    for source, stamp in enumerate(stamps):
+        desired = stamp + interval_s
+        index = int(np.searchsorted(stamps, desired))
+        candidates = [
+            target for target in (index - 1, index) if source < target < len(stamps)
+        ]
+        if candidates:
+            target = min(candidates, key=lambda i: (abs(stamps[i] - desired), i))
+            if abs(stamps[target] - stamp - interval_s) <= tolerance_s:
+                pairs.append((source, target))
+    return pairs, "available"
+
+
 def evaluate_trajectory(
-    frames: Iterable[TrajectoryFrame], intervals: Iterable[int] = (1, 5, 10)
+    frames: Iterable[TrajectoryFrame],
+    intervals: Iterable[int] = (1, 5, 10),
+    *,
+    time_intervals_s: Iterable[float] = (),
+    time_tolerance_s: float = 0.02,
 ) -> dict:
     """Evaluate each segment separately and RPE at exact frame-index intervals.
 
@@ -183,6 +219,41 @@ def evaluate_trajectory(
             excluded_cross_segment=crossed,
             excluded_reference=unavailable,
         )
+    time_rpe = {}
+    time_intervals_s = tuple(time_intervals_s)
+    if len(set(time_intervals_s)) != len(time_intervals_s):
+        raise ValueError("time RPE intervals must be unique")
+    for interval in time_intervals_s:
+        pairs, status = timestamp_pairs(
+            (row.timestamp for row in rows), interval, time_tolerance_s
+        )
+        errors, elapsed = [], []
+        crossed = unavailable = 0
+        for source_index, target_index in pairs:
+            source, target = rows[source_index], rows[target_index]
+            if source.segment_id != target.segment_id:
+                crossed += 1
+                continue
+            if not reference_valid[source_index] or not reference_valid[target_index]:
+                unavailable += 1
+                continue
+            reference = np.linalg.inv(target.reference_pose) @ source.reference_pose
+            if not is_rigid(reference):
+                unavailable += 1
+                continue
+            estimate = np.linalg.inv(target.T_SC_D) @ source.T_SC_D
+            errors.append(pose_error(estimate, reference))
+            elapsed.append(target.timestamp - source.timestamp)
+        time_rpe[str(interval)] = dict(
+            _summarize_errors(errors),
+            status=status,
+            interval_s=interval,
+            tolerance_s=time_tolerance_s,
+            candidate_pairs=len(pairs),
+            excluded_cross_segment=crossed,
+            excluded_reference=unavailable,
+            actual_interval_s=error_statistics(elapsed),
+        )
     pair_errors = []
     initial_errors = []
     final_errors = []
@@ -246,6 +317,7 @@ def evaluate_trajectory(
         "segments": segments,
         "continuous_trajectory": segments[0] if len(segments) == 1 else None,
         "rpe_by_frame_interval": rpe,
+        "rpe_by_time_interval_s": time_rpe,
         "refinement_comparison_accepted_pairs": {
             "initial": _summarize_errors(initial_errors),
             "final": _summarize_errors(final_errors),

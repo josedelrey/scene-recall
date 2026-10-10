@@ -287,3 +287,16 @@ Optical flow, keyframes, local bundle adjustment, loop closure, motion priors,
 and automatic estimator selection remain future work. Both sparse reprojection
 and geometric objectives can favor biased measurements. Pairwise accuracy alone
 does not resolve accumulated drift.
+
+## TUM and cross-dataset execution
+
+`scripts/rgbd_odometry.py` runs the same backends, tracking, evaluation, and
+exports with either `--sens-path` or `--tum-path`. The ScanNet script remains
+a compatibility entry point. The shared implementation lives in
+`scene_recall.odometry.cli`. No backend settings change when selecting TUM.
+
+The comparison runner accepts both source types and `--ranges all`. TUM
+provides independent motion-capture references and epoch timestamps. Time-based
+RPE supplements the existing frame-based metrics when a valid clock is present.
+See [TUM RGB-D support](tum.md) for source conventions, calibration limitations,
+association policy, commands, and report fields.

@@ -15,7 +15,11 @@ from pathlib import Path
 
 import numpy as np
 
-from scene_recall.odometry.evaluation import error_statistics, pose_error
+from scene_recall.odometry.evaluation import (
+    error_statistics,
+    pose_error,
+    timestamp_pairs,
+)
 from scene_recall.odometry.pipeline import is_rigid
 
 BACKENDS = ("sparse", "icp", "hybrid")
@@ -57,6 +61,7 @@ def summarize_range(run_dirs):
                 if reports[name]["environment"][key] != first["environment"][key]:
                     raise ValueError(f"comparison environments differ: {key}")
             for key in (
+                "timestamp_s",
                 "frame_index",
                 "source_frame_index",
                 "T_WC_D_reference",
@@ -102,6 +107,53 @@ def summarize_range(run_dirs):
                 }
                 for name, rows in errors.items()
             }
+        common_time_rpe = {}
+        for interval, settings in (
+            first["evaluation"].get("rpe_by_time_interval_s", {}).items()
+        ):
+            for report in reports.values():
+                other = (
+                    report["evaluation"].get("rpe_by_time_interval_s", {}).get(interval)
+                )
+                if other is None or other["tolerance_s"] != settings["tolerance_s"]:
+                    raise ValueError("time RPE settings must match")
+            stamps = archives["sparse"]["timestamp_s"]
+            pairs, status = timestamp_pairs(
+                stamps, float(interval), settings["tolerance_s"]
+            )
+            errors = {name: [] for name in BACKENDS}
+            elapsed = []
+            for source, target in pairs:
+                if not all(
+                    archive["segment_id"][source] == archive["segment_id"][target]
+                    for archive in archives.values()
+                ):
+                    continue
+                if not is_rigid(references[source]) or not is_rigid(references[target]):
+                    continue
+                reference = np.linalg.inv(references[target]) @ references[source]
+                if not is_rigid(reference):
+                    continue
+                elapsed.append(stamps[target] - stamps[source])
+                for name, archive in archives.items():
+                    estimate = (
+                        np.linalg.inv(archive["T_SC_D"][target])
+                        @ archive["T_SC_D"][source]
+                    )
+                    errors[name].append(pose_error(estimate, reference))
+            common_time_rpe[interval] = {
+                "status": status,
+                "candidate_pairs": len(pairs),
+                "tolerance_s": settings["tolerance_s"],
+                "actual_interval_s": error_statistics(elapsed),
+                "backends": {
+                    name: {
+                        "translation_m": error_statistics(e[0] for e in values),
+                        "rotation_deg": error_statistics(e[1] for e in values),
+                    }
+                    for name, values in errors.items()
+                },
+            }
         outcomes = []
         hybrid = reports["hybrid"]
         for frame, errors in zip(
@@ -134,6 +186,7 @@ def summarize_range(run_dirs):
         result = {
             "source": first["source"],
             "common_rpe": common_rpe,
+            "common_time_rpe": common_time_rpe,
             "runs": {
                 name: {
                     "directory": str(run_dirs[name]),
@@ -208,13 +261,22 @@ def summarize_range(run_dirs):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sens-path", type=Path, nargs="+", required=True)
-    parser.add_argument("--ranges", nargs="+", default=DEFAULT_RANGES)
+    parser.add_argument("--sens-path", type=Path, nargs="+")
+    parser.add_argument("--tum-path", type=Path, nargs="+")
+    parser.add_argument(
+        "--ranges", nargs="+", help="start:stop ranges or all for full sequences"
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--summarize-only", action="store_true")
     args = parser.parse_args()
+    if not args.sens_path and not args.tum_path:
+        parser.error("provide --sens-path and/or --tum-path")
     ranges = []
-    for value in args.ranges:
+    range_values = args.ranges or (["all"] if args.tum_path else DEFAULT_RANGES)
+    for value in range_values:
+        if value == "all":
+            ranges.append((0, None))
+            continue
         try:
             start, stop = map(int, value.split(":"))
             if start < 0 or stop <= start:
@@ -224,8 +286,13 @@ def main():
         ranges.append((start, stop))
     if len(set(ranges)) != len(ranges):
         parser.error("ranges must be unique")
-    sources = [source.expanduser().resolve() for source in args.sens_path]
-    if len({source.stem for source in sources}) != len(sources):
+    sources = [
+        ("--sens-path", path.expanduser().resolve()) for path in args.sens_path or []
+    ]
+    sources += [
+        ("--tum-path", path.expanduser().resolve()) for path in args.tum_path or []
+    ]
+    if len({source.stem for _, source in sources}) != len(sources):
         parser.error("captures must have unique names")
     output = args.output_dir.expanduser().resolve()
     if not args.summarize_only:
@@ -234,10 +301,11 @@ def main():
         output.mkdir(parents=True)
     env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1")
     results = []
-    for source in sources:
+    for source_flag, source in sources:
         for order_index, (start, stop) in enumerate(ranges):
             run_dirs = {
-                name: output / f"{source.stem}_{start}_{stop}_{name}"
+                name: output
+                / f"{source.stem}_{start}_{stop if stop is not None else 'all'}_{name}"
                 for name in BACKENDS
             }
             if not args.summarize_only:
@@ -246,13 +314,12 @@ def main():
                     subprocess.run(
                         [
                             sys.executable,
-                            str(ROOT / "scripts" / "scannet_odometry.py"),
-                            "--sens-path",
+                            str(ROOT / "scripts" / "rgbd_odometry.py"),
+                            source_flag,
                             str(source),
                             "--start",
                             str(start),
-                            "--stop",
-                            str(stop),
+                            *([] if stop is None else ["--stop", str(stop)]),
                             "--backend",
                             name,
                             "--output-dir",
