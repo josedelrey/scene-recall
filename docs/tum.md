@@ -167,3 +167,7 @@ benchmark evaluation. Raw estimated poses remain in local segment coordinates.
 See [initial cross-dataset results](tum_odometry_evaluation.md) for measurements,
 limits, and next experiments. Tests run with `uv run pytest -q`,
 `uv run ruff check .`, and `uv run ruff format --check .`.
+
+The [cross-sequence evaluation](tum_cross_sequence_evaluation.md) extends the
+fixed-configuration comparison to full `freiburg1_rpy` and `freiburg1_desk`,
+with motion, convergence, drift, timing, and repeatability diagnostics.

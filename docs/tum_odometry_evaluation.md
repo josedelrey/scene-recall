@@ -5,6 +5,10 @@ RGB-D data, all three existing odometry backends, and the shared evaluation and
 export pipeline. The adapter supplies independent motion-capture references.
 Backend settings and acceptance policies are unchanged.
 
+The subsequent [cross-sequence evaluation](tum_cross_sequence_evaluation.md)
+covers the two planned Freiburg 1 motion and office-sweep sequences and
+reassesses the development path toward multiframe mapping.
+
 ## Method and source validation
 
 The first experiment evaluates the complete associated sequence. The source
