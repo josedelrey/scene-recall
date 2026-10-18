@@ -95,7 +95,7 @@ Extract it into an ignored local data directory:
 
 ```bash
 mkdir -p data/tum
-uv run python - <<'PY'
+uv run --locked python - <<'PY'
 import tarfile
 
 with tarfile.open("/path/to/rgbd_dataset_freiburg1_xyz.tgz") as archive:
@@ -103,31 +103,18 @@ with tarfile.open("/path/to/rgbd_dataset_freiburg1_xyz.tgz") as archive:
 PY
 ```
 
-Run a backend or a serial matched comparison with fixed default settings:
+Run Sparse on an associated range:
 
 ```bash
-OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 uv run python scripts/rgbd_odometry.py \
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 uv run --locked python \
+  scripts/rgbd_odometry.py \
   --tum-path data/tum/rgbd_dataset_freiburg1_xyz \
   --backend sparse --stop 200 --output-dir outputs/odometry/tum_sparse_200
-
-OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 uv run python experiments/compare_odometry_backends.py \
-  --tum-path data/tum/rgbd_dataset_freiburg1_xyz \
-  --ranges all --output-dir outputs/odometry/tum_xyz_repeat
 ```
 
-The comparison accepts multiple TUM paths and multiple ScanNet `--sens-path`
-inputs in the same invocation. Explicit `--ranges 0:200` uses the same clip
-length for every input. `--ranges all` evaluates full sequences. ScanNet-only
-runs retain their previous five default ranges. Any invocation containing TUM
-defaults to full sequences. Use fresh output directories to preserve prior runs.
+The [comparison workflow](odometry_backend_comparison.md) covers full-sequence
+and mixed ScanNet/TUM runs, saved-result analysis and repeat verification.
 The legacy `scripts/scannet_odometry.py` delegates to the same shared runner.
-
-```bash
-OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 uv run python experiments/compare_odometry_backends.py \
-  --sens-path /path/to/scene0000_00.sens \
-  --tum-path data/tum/rgbd_dataset_freiburg1_xyz \
-  --ranges 0:200 --output-dir outputs/odometry/cross_dataset_200
-```
 
 ## Metrics and artifacts
 
@@ -139,15 +126,15 @@ source counts, and per-frame provenance. A SHA-256 fingerprint covers the exact
 selected canonical image arrays, reference arrays, and provenance. Matched
 comparisons require identical fingerprints, source selection, calibration,
 timestamps, reference poses, backend component settings, and environment.
-The export schema retains version 2 with additive report fields.
+Exports use format version 2.
 
-Frame RPE at intervals 1, 5, and 10 remains directly comparable to the existing
-ScanNet experiments. The shared evaluator also supports RPE at **0.1, 0.5, and
+Frame RPE uses the same 1, 5 and 10 frame intervals for both adapters. The shared evaluator supports RPE at **0.1, 0.5, and
 1.0 seconds** through `--rpe-time-intervals-s`, using a nearest later endpoint
 per source within `--rpe-time-tolerance-s` (default 0.02 seconds). Ties select the
 earlier target. Actual elapsed-time distributions and candidate counts are
 reported. Missing or nonmonotonic clocks make time RPE unavailable while frame
-RPE remains valid. The existing local ScanNet capture has unavailable timestamps.
+RPE remains valid. ScanNet records with zero depth timestamps have no
+canonical timestamp.
 
 Every tracking loss starts a separate segment. Both kinds of RPE exclude
 cross-segment pairs and missing references. Comparison summaries use the same
@@ -163,11 +150,3 @@ uses the policy above. The official TUM scripts use their own time association
 and relative-transform conventions. Report these settings when comparing
 external scores rather than describing the results as an identical official
 benchmark evaluation. Raw estimated poses remain in local segment coordinates.
-
-See [initial cross-dataset results](tum_odometry_evaluation.md) for measurements,
-limits, and next experiments. Tests run with `uv run pytest -q`,
-`uv run ruff check .`, and `uv run ruff format --check .`.
-
-The [cross-sequence evaluation](tum_cross_sequence_evaluation.md) extends the
-fixed-configuration comparison to full `freiburg1_rpy` and `freiburg1_desk`,
-with motion, convergence, drift, timing, and repeatability diagnostics.

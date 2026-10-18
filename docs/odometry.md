@@ -1,20 +1,15 @@
 # Selectable RGB-D odometry
 
-See [initial experimental results](odometry_experiments.md) for ScanNet ablations,
-reproducibility checks, and measured drift. See the
-[three-backend comparison](odometry_backend_comparison.md) for matched sparse,
-depth-only, and hybrid runs.
-
 Three independently selectable backends consume canonical observations and
 calibration through the same sequential tracker:
 
 | Backend | Initialization and objective | Failure behavior |
 | --- | --- | --- |
-| `sparse` | Existing SIFT, matching, source depth, EPnP RANSAC, LM | Failed estimation or LM starts a new segment |
+| `sparse` | SIFT, matching, source depth, EPnP RANSAC, LM | Failed estimation or LM starts a new segment |
 | `icp` | Identity for each pair, independent multiscale depth point-to-plane ICP | Failed or unconverged geometry starts a new segment |
 | `hybrid` | Complete accepted sparse pose, followed by the same ICP | Sparse failure starts a segment, ICP failure explicitly retains sparse by default |
 
-Sparse remains the default and its estimator implementation is unchanged.
+Sparse is the default.
 Dataset parsing stays in adapters. Reference poses are used only by evaluation.
 The depth estimator uses only depth and `K_D`, regardless of RGB grids or `T_RD`.
 Hybrid receives the sparse estimate after its conversion into depth frames.
@@ -22,8 +17,8 @@ Hybrid receives the sparse estimate after its conversion into depth frames.
 ## Running a capture
 
 ```bash
-uv run python scripts/scannet_odometry.py \
-    --sens-path ~/datasets/scannet/scans/scene0000_00/scene0000_00.sens \
+uv run --locked python scripts/rgbd_odometry.py \
+    --sens-path /path/to/scene0000_00.sens \
     --backend hybrid --start 0 --stop 200 \
     --output-dir outputs/odometry/hybrid_example_0_200
 ```
@@ -89,7 +84,7 @@ including LM and its consensus and coverage gates. It then calls
 The two backends share one geometric implementation. Each backend caches only
 one observation's features or pyramid and is intended for serial use.
 
-The promoted [validated experiment](depth_registration_experiment.md) supplies
+The depth pipeline uses
 native-grid subsampling at factors 4, 2, 1 with consistent depth intrinsics.
 Original z-depth supplies points, while bilateral depth supplies normals.
 The fixed bilateral parameters are diameter 5, range sigma 0.02 m, and spatial
@@ -136,10 +131,10 @@ support produces null scores. Residual reduction is diagnostic and is never
 interpreted as a pose-accuracy guarantee or used to choose a pose against
 reference data. Hybrid acceptance does not require lower held-out residuals.
 
-The historical depth experiment shares cloud, association, and linearization
-primitives with production. It retains its original diagnostic solver, including
+The experimental depth-registration utility shares cloud, association and
+linearization primitives with production. Its diagnostic solver retains
 per-iteration traces and permissive candidate reporting. Production acceptance
-is stricter than that experimental candidate protocol.
+is stricter. See the [comparison workflow](odometry_backend_comparison.md#diagnostic-utilities).
 
 ## Coordinate frames and failures
 
@@ -184,8 +179,10 @@ does not implement relocalization or keyframe recovery.
   tracking time,
   timestamp availability, per-frame diagnostics, and evaluation.
 
-Input identity includes path, size, and modification time, rather than a dataset
-content hash. The code fingerprint covers the Python package and run script.
+Input identity records path, size, modification time and a SHA-256 fingerprint
+of the selected canonical RGB-D arrays, reference arrays and provenance.
+Mapping verifies this canonical fingerprint before publishing artifacts. The
+code fingerprint covers the Python package and shared CLI implementation.
 The CLI fixes OpenCV to one thread and resets RANSAC's seed for each pair.
 Set `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1` before starting Python for
 controlled geometric runtime and numerical comparisons.
@@ -199,7 +196,7 @@ ICP, and is the complete accepted sparse pose for hybrid. `initial_pose_stage`
 records that meaning in the report. Hybrid also saves `ransac_T_C1C0`.
 `candidate_T_C1C0` stores ICP's terminal pose even on rejected refinement.
 Candidates are diagnostics only and never provide trajectory continuity.
-The new geometric comparison reports only successful ICP refinements, excluding
+The geometric comparison reports only successful ICP refinements, excluding
 fallbacks. The generic initial/final comparison includes all accepted pairs
 with an initialization and thus includes identical sparse fallback poses.
 
@@ -231,28 +228,33 @@ length accompany accuracy. A continuous trajectory result is available only for
 a single segment. Repeated resets can make segment accuracy misleading, so
 always compare coverage and segment lengths too.
 
-Runs without timestamps use frame intervals and never invent sampling times.
-ScanNet poses are reconstruction references with their own errors. A benchmark
-with independent measured poses remains necessary for broader accuracy claims.
+Time RPE additionally supports 0.1, 0.5 and 1.0 second horizons by default.
+It chooses the nearest later endpoint within 0.02 seconds, preferring the earlier
+target on ties, and reports actual interval distributions. Missing or
+nonmonotonic timestamps make time RPE unavailable. Frame RPE remains valid.
+See [TUM support](tum.md#metrics-and-artifacts) for timing and external-benchmark
+comparison limits. ScanNet references come from reconstruction, while TUM
+references come from motion capture. Keep their provenance explicit.
 
 ## Ablations
 
-Use the same range and quality gates while changing one setting:
+Set `SENS` to a source `.sens` path. Use the same range and quality gates while
+changing one setting:
 
 ```bash
-uv run python scripts/scannet_odometry.py \
+uv run --locked python scripts/rgbd_odometry.py \
     --sens-path "$SENS" --stop 200 \
     --output-dir outputs/odometry/no_lm_0_200 --no-refine
 
-uv run python scripts/scannet_odometry.py \
+uv run --locked python scripts/rgbd_odometry.py \
     --sens-path "$SENS" --stop 200 \
     --output-dir outputs/odometry/no_edges_0_200 --no-depth-edge-filter
 
-uv run python scripts/scannet_odometry.py \
+uv run --locked python scripts/rgbd_odometry.py \
     --sens-path "$SENS" --stop 200 \
     --output-dir outputs/odometry/no_mutual_0_200 --no-mutual
 
-uv run python scripts/scannet_odometry.py \
+uv run --locked python scripts/rgbd_odometry.py \
     --sens-path "$SENS" --stop 200 \
     --output-dir outputs/odometry/low_ransac_0_200 \
     --iterations 100 --confidence 0.99
@@ -264,36 +266,18 @@ Its raw RANSAC helper is shared with the sequential estimator.
 
 ## Controlled backend comparisons
 
-```bash
-OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 UV_CACHE_DIR=/tmp/scene-recall-uv-cache \
-uv run --offline python experiments/compare_odometry_backends.py \
-  --sens-path "$SENS" \
-  --ranges 0:200 1000:1200 2000:2200 3500:3700 4500:4700 \
-  --output-dir outputs/odometry/backend_comparison_repeat
-```
-
-Multiple captures can be passed to `--sens-path`. Output must be fresh.
-The runner rotates backend order across ranges and runs them serially with
-one OpenCV and BLAS thread. `--summarize-only` reads existing run directories.
-It verifies source identities, reference arrays, calibration, settings, code
-fingerprints, and numerical environments. It reports shared continuous RPE
-populations and hybrid before/after errors alongside depth residual changes.
-Each individual run preserves its full trajectory, report, and scalar CSV.
-`comparison.json` includes report hashes and the comparison script's hash.
-Runtime is one descriptive measurement per backend and range. It includes
-capture opening, indexing, decode, and tracking, excluding evaluation and export.
-
-Optical flow, keyframes, local bundle adjustment, loop closure, motion priors,
-and automatic estimator selection remain future work. Both sparse reprojection
-and geometric objectives can favor biased measurements. Pairwise accuracy alone
-does not resolve accumulated drift.
+The [comparison workflow](odometry_backend_comparison.md) covers serial matched
+runs, common accuracy populations, failure probes, saved-result analysis and
+repeat verification. Evaluate continuity, translation, rotation and runtime
+together. Sparse reprojection and geometric objectives can favor biased
+measurements, so a lower residual does not establish a better physical pose.
 
 ## TUM and cross-dataset execution
 
 `scripts/rgbd_odometry.py` runs the same backends, tracking, evaluation, and
 exports with either `--sens-path` or `--tum-path`. The ScanNet script remains
 a compatibility entry point. The shared implementation lives in
-`scene_recall.odometry.cli`. No backend settings change when selecting TUM.
+`scene_recall.odometry.cli`. Backend settings are independent of the selected adapter.
 
 The comparison runner accepts both source types and `--ranges all`. TUM
 provides independent motion-capture references and epoch timestamps. Time-based

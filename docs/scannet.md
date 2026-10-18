@@ -1,8 +1,8 @@
 # ScanNet reading and point-cloud export
 
 For camera trajectories from consecutive observations, see
-[sequential RGB-D odometry and evaluation](odometry.md). The original two-frame
-SIFT experiment below remains available with its historical settings.
+[sequential RGB-D odometry and evaluation](odometry.md). The two-frame
+SIFT utility below provides an inspectable pairwise baseline.
 
 ## Sequential reading
 
@@ -59,7 +59,7 @@ Load one original frame from a processed ScanNet v2 capture:
 from scene_recall.datasets.scannet import load_scannet_frame
 
 sequence = load_scannet_frame(
-    "~/datasets/scannet/scans/scene0000_00/scene0000_00.sens",
+    "/path/to/scene0000_00.sens",
     original_frame_index=0,
 )
 observation = sequence.observations[0]
@@ -99,7 +99,7 @@ rejected. See `ScanNetReader`'s docstring for supported calibration and errors.
 Run from the repository root:
 
 ```bash
-uv run python scripts/scannet_point_cloud.py \
+uv run --locked python scripts/scannet_point_cloud.py \
     --sens-path /path/to/scene0000_00.sens \
     --output outputs/scene0000_00_frame0_C_D.ply
 ```
@@ -129,7 +129,7 @@ paths explicitly.
 Run from the repository root:
 
 ```bash
-uv run python experiments/scannet_sift.py \
+uv run --locked python experiments/scannet_sift.py \
     --sens-path /path/to/scene0000_00.sens
 ```
 
