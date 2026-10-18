@@ -4,7 +4,8 @@ from collections.abc import Iterable
 
 import numpy as np
 
-from scene_recall.odometry.pipeline import TrajectoryFrame, is_rigid
+from scene_recall.geometry.transforms import is_rigid
+from scene_recall.odometry.pipeline import TrajectoryFrame
 
 
 def error_statistics(values: Iterable[float]) -> dict:

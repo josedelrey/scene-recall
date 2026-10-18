@@ -24,12 +24,12 @@ from scene_recall.datasets.replay import (
     verified_observations,
 )
 from scene_recall.geometry.camera import project_points, transform_points
+from scene_recall.geometry.transforms import is_rigid
 from scene_recall.mapping.evaluation import heldout_metrics, render_depth
 from scene_recall.mapping.heldout import check_cohort, prediction_poses
 from scene_recall.mapping.pipeline import Keyframe, build_submap
 from scene_recall.mapping.voxel import MappingConfig, VoxelCloud, sample_observation
 from scene_recall.odometry.io import load_trajectory
-from scene_recall.odometry.pipeline import is_rigid
 from scene_recall.run_metadata import code_hash, sha256
 
 

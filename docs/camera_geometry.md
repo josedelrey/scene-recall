@@ -54,6 +54,11 @@ The inverse translation is generally not $-\mathbf{t}_{WC}$ because it must be e
 
 The rotation identities and transpose-based inverse above assume a rigid pose. The [canonical data contract](data_contract.md#transform-validation-policy) checks homogeneous structure without enforcing a numerical $SO(3)$ tolerance or repairing rotations. Consumers that rely on these identities must establish the rotation quality they require.
 
+`scene_recall.geometry.transforms.is_rigid` provides the shared numerical check
+without repairing or modifying its input. Its default absolute tolerance is
+`1e-4`. Tracking and backend acceptance explicitly use `1e-6`, while mapping
+and reference diagnostics retain their existing consumer-specific policies.
+
 Transforms compose in source-to-destination order:
 
 $$

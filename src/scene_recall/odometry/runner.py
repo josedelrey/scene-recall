@@ -58,13 +58,8 @@ def run_odometry(
     backend = backend_factory(config)
     tum_config = tum_config or TUMConfig()
     output = output.expanduser()
-    if any(
-        (output / name).exists()
-        for name in ("trajectory.npz", "frames.csv", "report.json")
-    ):
-        raise ValueError("output already contains a run, choose a new output directory")
-    if output.exists() and not output.is_dir():
-        raise ValueError("output must be a directory")
+    if output.exists() or output.is_symlink():
+        raise ValueError("output already exists, choose a new output directory")
     source = source.expanduser().resolve()
     source_stat = source.stat()
     # Retain the historical extra contribution of the odometry CLI source.

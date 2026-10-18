@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from test_mapping import pose, row
+from helpers.mapping import pose, row
 
 from scene_recall.mapping.keyframes import select_motion_keyframes
 
@@ -122,8 +122,8 @@ def test_cohort_scoring_uses_exact_common_pixels_and_charges_missing_predictions
 
 
 def test_runner_target_depth_independence_repeat_and_atomic_failure(tmp_path):
+    from helpers.runs import continuous_run
     from PIL import Image
-    from test_heldout import continuous_run
 
     from scene_recall.mapping.heldout import run_heldout
     from scene_recall.mapping.voxel import MappingConfig
@@ -172,7 +172,7 @@ def test_runner_target_depth_independence_repeat_and_atomic_failure(tmp_path):
 
 
 def test_missing_training_reference_preserves_maps_and_original_exclusion(tmp_path):
-    from test_heldout import continuous_run
+    from helpers.runs import continuous_run
 
     from scene_recall.mapping.heldout import run_heldout
     from scene_recall.mapping.voxel import MappingConfig

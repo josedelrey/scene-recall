@@ -2,7 +2,7 @@
 
 import numpy as np
 import pytest
-from test_mapping import pose
+from helpers.mapping import pose
 
 from scene_recall.geometry.camera import backproject_depth
 from scene_recall.mapping.evaluation import render_depth

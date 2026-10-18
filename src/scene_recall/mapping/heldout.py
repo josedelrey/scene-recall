@@ -19,12 +19,12 @@ from scene_recall.datasets.replay import (
     validate_source,
     verified_observations,
 )
+from scene_recall.geometry.transforms import is_rigid
 from scene_recall.mapping.evaluation import heldout_metrics, render_depth
 from scene_recall.mapping.export import save_cloud
 from scene_recall.mapping.pipeline import Keyframe, build_submap, select_keyframes
 from scene_recall.mapping.voxel import MappingConfig, sample_observation
 from scene_recall.odometry.io import load_trajectory
-from scene_recall.odometry.pipeline import is_rigid
 from scene_recall.run_metadata import code_hash, peak_rss, sha256
 
 

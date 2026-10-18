@@ -5,9 +5,9 @@ from itertools import product
 import numpy as np
 
 from scene_recall.geometry.camera import project_points, transform_points
+from scene_recall.geometry.transforms import is_rigid
 from scene_recall.mapping.voxel import SurfaceSamples, VoxelCloud
 from scene_recall.odometry.evaluation import error_statistics
-from scene_recall.odometry.pipeline import is_rigid
 
 
 def depth_consistency(

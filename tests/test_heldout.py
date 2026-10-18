@@ -1,6 +1,5 @@
 """Held-out populations, visibility, pose gauges and end-to-end reproducibility."""
 
-import hashlib
 import json
 import runpy
 from dataclasses import replace
@@ -8,11 +7,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from helpers.mapping import plane, pose, row, samples
+from helpers.runs import continuous_run, make_run
 from PIL import Image
-from test_mapping import plane, pose, row, samples
-from test_mapping_cli import make_run
 
-from scene_recall.datasets.tum import TUMConfig, TUMReader
 from scene_recall.mapping.evaluation import heldout_metrics, render_depth
 from scene_recall.mapping.heldout import (
     check_cohort,
@@ -24,7 +22,7 @@ from scene_recall.mapping.heldout import (
 )
 from scene_recall.mapping.pipeline import Keyframe, build_submap
 from scene_recall.mapping.voxel import MappingConfig, VoxelMap
-from scene_recall.odometry.io import load_trajectory, save_run
+from scene_recall.odometry.io import load_trajectory
 
 
 def cloud(points):
@@ -177,47 +175,6 @@ def test_reference_pose_and_estimated_pose_experiments_measure_different_errors(
         prediction_poses(
             {"sparse": submap}, {"sparse": replace(target, reference_pose=None)}
         )
-
-
-def continuous_run(tmp_path, heldout_depth=2.0, missing_reference=None):
-    source, run = make_run(tmp_path)
-    Image.fromarray(
-        np.full((480, 640), round(heldout_depth * 5000), dtype=np.uint16)
-    ).save(source / "heldout.png")
-    (source / "depth.txt").write_text("1 depth.png\n1.03 heldout.png\n1.06 depth.png\n")
-    report, frames = load_trajectory(run)
-    association = TUMConfig(max_ground_truth_difference_s=0.01)
-    if missing_reference is not None:
-        stamps = ["1", "1.03", "1.06"]
-        (source / "groundtruth.txt").write_text(
-            "".join(
-                f"{stamp} 0 0 0 0 0 0 1\n"
-                for i, stamp in enumerate(stamps)
-                if i != missing_reference
-            )
-        )
-    with TUMReader(source, config=association) as reader:
-        observations = list(reader)
-        report["source"]["adapter"] = reader.metadata
-    report["source"]["association_config"]["max_ground_truth_difference_s"] = 0.01
-    digest = hashlib.sha256()
-    for i, observation in enumerate(observations):
-        metadata = dict(observation.provenance)
-        digest.update(json.dumps(metadata, sort_keys=True, allow_nan=False).encode())
-        for array in (observation.rgb, observation.depth, observation.T_WC_D):
-            digest.update(b"none" if array is None else array.tobytes())
-        frames[i] = replace(
-            frames[i],
-            segment_id=0,
-            status="initialized" if i == 0 else "tracked",
-            reference_pose=observation.T_WC_D,
-        )
-        report["frames"][i].update(
-            segment_id=0, status=frames[i].status, provenance=metadata
-        )
-    report["source"]["canonical_input_sha256"] = digest.hexdigest()
-    save_run(run, frames, report, 0)
-    return source, run
 
 
 def test_real_adapter_repeatability_no_fusion_leakage_and_atomicity(tmp_path):

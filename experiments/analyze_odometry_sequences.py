@@ -13,12 +13,12 @@ from pathlib import Path
 import numpy as np
 
 from scene_recall.datasets.tum import TUMConfig, TUMReader
+from scene_recall.geometry.transforms import is_rigid
 from scene_recall.odometry.evaluation import (
     error_statistics,
     pose_error,
     timestamp_pairs,
 )
-from scene_recall.odometry.pipeline import is_rigid
 
 NAMES = ("sparse", "icp", "hybrid")
 COLORS = ("#3167a8", "#d47d20", "#8460a8")

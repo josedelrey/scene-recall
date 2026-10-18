@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from helpers.odometry import render_room
 
 from scene_recall.geometry.camera import backproject_depth, transform_points
 from scene_recall.odometry.evaluation import pose_error
@@ -12,29 +13,6 @@ from scene_recall.odometry.evaluation import pose_error
 experiment = runpy.run_path(
     Path(__file__).parents[1] / "experiments" / "depth_registration.py"
 )
-
-
-def render_room(K, shape, camera_to_world):
-    """Intersect camera rays with five analytic room planes."""
-    rays = backproject_depth(np.ones(shape), K)
-    rays_world = rays @ camera_to_world[:3, :3].T
-    origin = camera_to_world[:3, 3]
-    depth = np.full(shape, np.inf)
-    planes = [
-        (np.array([0, 0, 1]), 2.5),
-        (np.array([1, 0, 0]), 0.65),
-        (np.array([-1, 0, 0]), 0.65),
-        (np.array([0, 1, 0]), 0.5),
-        (np.array([0, -1, 0]), 0.5),
-    ]
-    for normal, offset in planes:
-        denominator = rays_world @ normal
-        with np.errstate(divide="ignore", invalid="ignore"):
-            intersection = (offset - origin @ normal) / denominator
-        intersection[intersection <= 0] = np.inf
-        depth = np.minimum(depth, intersection)
-    depth[~np.isfinite(depth)] = np.nan
-    return depth.astype(np.float32)
 
 
 def test_point_to_plane_jacobian_matches_independent_finite_difference():

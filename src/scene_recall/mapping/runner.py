@@ -18,12 +18,12 @@ from scene_recall.datasets.replay import (
     validate_source,
     verified_observations,
 )
+from scene_recall.geometry.transforms import is_rigid
 from scene_recall.mapping.evaluation import depth_consistency, summarize_consistency
 from scene_recall.mapping.export import export_submap
 from scene_recall.mapping.pipeline import reconstruct
 from scene_recall.mapping.voxel import MappingConfig
 from scene_recall.odometry.io import load_trajectory
-from scene_recall.odometry.pipeline import is_rigid
 from scene_recall.run_metadata import code_hash, peak_rss, sha256
 
 

@@ -9,13 +9,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from test_mapping import plane, pose, row, samples
-from test_mapping_cli import make_run
+from helpers.mapping import plane, pose, row, samples
+from helpers.runs import make_run
 
 from scene_recall.mapping.pipeline import Keyframe, build_submap
 from scene_recall.mapping.runner import run_mapping
 from scene_recall.mapping.voxel import MappingConfig
-from scene_recall.odometry.io import load_trajectory, save_run
 from scene_recall.visualization.recording import export_recording
 from scene_recall.visualization.rerun import (
     DisplayConfig,
@@ -204,15 +203,7 @@ def test_odometry_only_recording(tmp_path):
 def test_sparse_images_are_cleared_at_unlogged_frames(tmp_path):
     pytest.importorskip("rerun")
     executable = str(Path(sys.executable).with_name("rerun"))
-    _, run = make_run(tmp_path)
-    report, frames = load_trajectory(run)
-    frames = [
-        replace(r, segment_id=0, status="tracked" if i else "initialized")
-        for i, r in enumerate(frames)
-    ]
-    for row_meta, frame in zip(report["frames"], frames, strict=True):
-        row_meta.update(segment_id=frame.segment_id, status=frame.status)
-    save_run(run, frames, report, 0)
+    _, run = make_run(tmp_path, continuous=True)
     mapping = tmp_path / "mapping"
     run_mapping(run, mapping, MappingConfig(pixel_stride=32, keyframe_stride=2))
     output = tmp_path / "sparse.rrd"

@@ -167,6 +167,11 @@ does not implement relocalization or keyframe recovery.
 
 ## Outputs and reproducibility
 
+Exports require a fresh output directory. Files are written in a temporary
+directory beside the destination, then the complete run is published atomically.
+Write failures discard temporary files and leave the destination available for
+a retry. Existing destinations, including empty directories, are refused.
+
 - `trajectory.npz` stores frame and source indices, optional timestamps as NaN,
   segment IDs, statuses, segment-local `T_SC_D`, untouched references and their
   presence masks, accepted `T_C1C0`, backend initialization, ICP candidates, and

@@ -1,97 +1,18 @@
 """Exercise real dataset loading, strict export pairing and atomic publication."""
 
-import hashlib
 import json
 import runpy
 from pathlib import Path
 
 import numpy as np
 import pytest
+from helpers.runs import make_run
 from PIL import Image
 
-from scene_recall.datasets.tum import TUMConfig, TUMReader
 from scene_recall.mapping.cli import main
 from scene_recall.mapping.runner import run_mapping
 from scene_recall.mapping.voxel import MappingConfig
-from scene_recall.odometry.io import load_trajectory, save_run
-from scene_recall.odometry.pipeline import TrajectoryFrame
-
-
-def make_run(tmp_path):
-    source = tmp_path / "tum"
-    source.mkdir()
-    Image.fromarray(np.full((480, 640, 3), [100, 180, 50], dtype=np.uint8)).save(
-        source / "rgb.png"
-    )
-    Image.fromarray(np.full((480, 640), 10000, dtype=np.uint16)).save(
-        source / "depth.png"
-    )
-    (source / "rgb.txt").write_text("1 rgb.png\n1.03 rgb.png\n1.06 rgb.png\n")
-    (source / "depth.txt").write_text("1 depth.png\n1.03 depth.png\n1.06 depth.png\n")
-    (source / "groundtruth.txt").write_text(
-        "1 0 0 0 0 0 0 1\n1.03 0 0 0 0 0 0 1\n1.06 0 0 0 0 0 0 1\n"
-    )
-    with TUMReader(source) as reader:
-        observations = list(reader)
-        calibration = reader.calibration
-        metadata = reader.metadata
-    rows = [
-        TrajectoryFrame(
-            i,
-            o.timestamp,
-            int(i >= 1),
-            ("initialized", "lost", "tracked")[i],
-            np.eye(4),
-            o.T_WC_D,
-        )
-        for i, o in enumerate(observations)
-    ]
-    digest = hashlib.sha256()
-    for o in observations:
-        digest.update(
-            json.dumps(dict(o.provenance), sort_keys=True, allow_nan=False).encode()
-        )
-        for array in (o.rgb, o.depth, o.T_WC_D):
-            digest.update(array.tobytes())
-    report = {
-        "format_version": 2,
-        "backend": "sparse",
-        "evaluation": {"frame_count": 3},
-        "source": {
-            "dataset": "tum_rgbd",
-            "sequence_id": source.name,
-            "path": str(source),
-            "start": 0,
-            "stop": 3,
-            "source_frame_count": 3,
-            "association_config": {
-                "max_rgb_depth_difference_s": TUMConfig().max_rgb_depth_difference_s,
-                "max_ground_truth_difference_s": TUMConfig().max_ground_truth_difference_s,
-            },
-            "adapter": metadata,
-            "canonical_input_sha256": digest.hexdigest(),
-        },
-        "calibration": {
-            "K_R": calibration.K_R.tolist(),
-            "K_D": calibration.K_D.tolist(),
-            "T_RD": calibration.T_RD.tolist(),
-            "rgb_shape": calibration.rgb_shape,
-            "depth_shape": calibration.depth_shape,
-        },
-        "frames": [
-            {
-                "frame_index": i,
-                "source_frame_index": i,
-                "segment_id": row.segment_id,
-                "status": row.status,
-                "provenance": dict(observations[i].provenance),
-            }
-            for i, row in enumerate(rows)
-        ],
-    }
-    run = tmp_path / "odometry"
-    save_run(run, rows, report, 0)
-    return source, run
+from scene_recall.odometry.io import load_trajectory
 
 
 def test_end_to_end_disconnected_maps_exports_and_repeatability(tmp_path):

@@ -15,12 +15,12 @@ from pathlib import Path
 
 import numpy as np
 
+from scene_recall.geometry.transforms import is_rigid
 from scene_recall.odometry.evaluation import (
     error_statistics,
     pose_error,
     timestamp_pairs,
 )
-from scene_recall.odometry.pipeline import is_rigid
 
 BACKENDS = ("sparse", "icp", "hybrid")
 DEFAULT_RANGES = ("0:200", "1000:1200", "2000:2200", "3500:3700", "4500:4700")

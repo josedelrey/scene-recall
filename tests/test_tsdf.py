@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
-from test_mapping import plane, pose
+from helpers.mapping import plane, pose
 
 from scene_recall.mapping.tsdf import TSDFConfig, TSDFView, TSDFVolume, fuse_tsdf
 
@@ -133,8 +133,8 @@ def test_runner_keeps_target_depth_out_of_fusion_and_repeats_exactly(tmp_path):
     import runpy
     from pathlib import Path
 
+    from helpers.runs import continuous_run
     from PIL import Image
-    from test_heldout import continuous_run
 
     from scene_recall.mapping.heldout import run_heldout
     from scene_recall.mapping.voxel import MappingConfig
@@ -185,7 +185,7 @@ def test_runner_preserves_unpaired_chunk_geometry_and_exclusions(tmp_path):
     import runpy
     from pathlib import Path
 
-    from test_heldout import continuous_run
+    from helpers.runs import continuous_run
 
     from scene_recall.mapping.heldout import run_heldout
     from scene_recall.mapping.voxel import MappingConfig

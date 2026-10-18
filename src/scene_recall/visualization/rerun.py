@@ -10,7 +10,8 @@ from importlib import import_module
 import numpy as np
 
 from scene_recall.data import Calibration, Observation
-from scene_recall.odometry.pipeline import TrajectoryFrame, is_rigid
+from scene_recall.geometry.transforms import is_rigid
+from scene_recall.odometry.pipeline import TrajectoryFrame
 
 ESTIMATED = [255, 190, 70]
 REFERENCE = [70, 210, 190]

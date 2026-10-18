@@ -4,7 +4,7 @@ from itertools import pairwise
 
 import numpy as np
 
-from scene_recall.odometry.pipeline import is_rigid
+from scene_recall.geometry.transforms import is_rigid
 
 
 def select_motion_keyframes(

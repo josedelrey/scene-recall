@@ -10,8 +10,8 @@ from scene_recall.geometry.camera import (
     project_points,
     transform_points,
 )
+from scene_recall.geometry.transforms import is_rigid
 from scene_recall.mapping.mesh import TriangleMesh
-from scene_recall.odometry.pipeline import is_rigid
 
 
 @dataclass(frozen=True)

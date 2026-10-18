@@ -103,8 +103,9 @@ def test_cli_exports_reproducible_poses_and_evaluation(tmp_path, monkeypatch):
 
 
 def test_empty_run_archive_has_consistent_shapes(tmp_path):
-    script["save_run"](tmp_path, [], {}, 10)
-    with np.load(tmp_path / "trajectory.npz", allow_pickle=False) as archive:
+    output = tmp_path / "run"
+    script["save_run"](output, [], {}, 10)
+    with np.load(output / "trajectory.npz", allow_pickle=False) as archive:
         assert archive["T_SC_D"].shape == (0, 4, 4)
         assert archive["frame_index"].shape == (0,)
         assert archive["reference_present"].dtype == bool
@@ -180,7 +181,7 @@ def test_cli_failed_transitions_export_segments_without_fabricated_motion(
 def test_cli_selects_geometric_backends_and_exports_stage_diagnostics(
     tmp_path, monkeypatch, backend
 ):
-    from test_icp_odometry import room_pair
+    from helpers.odometry import room_pair
 
     first, second, calibration, truth = room_pair()
     source = tmp_path / "room.sens"
@@ -204,7 +205,7 @@ def test_cli_selects_geometric_backends_and_exports_stage_diagnostics(
 
     if backend == "hybrid":
         # Inject only the sparse stage so the real geometric backend and CLI run.
-        from test_icp_odometry import StubSparse
+        from helpers.odometry import StubSparse
 
         from scene_recall.odometry.hybrid import HybridRGBDBackend
         from scene_recall.odometry.pipeline import PairEstimate

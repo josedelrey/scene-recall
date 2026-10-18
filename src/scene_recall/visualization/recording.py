@@ -15,8 +15,8 @@ from scene_recall.datasets.replay import (
     validate_source,
     verified_observations,
 )
+from scene_recall.geometry.transforms import is_rigid
 from scene_recall.odometry.io import load_trajectory
-from scene_recall.odometry.pipeline import is_rigid
 from scene_recall.run_metadata import sha256
 from scene_recall.visualization.rerun import (
     DisplayConfig,

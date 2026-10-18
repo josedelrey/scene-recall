@@ -1,5 +1,7 @@
 """Dataset-independent selectable RGB-D odometry and trajectory evaluation."""
 
+from importlib import import_module
+
 from scene_recall.odometry.pipeline import (
     PairEstimate,
     PairwiseBackend,
@@ -7,17 +9,38 @@ from scene_recall.odometry.pipeline import (
     track_observations,
 )
 
-__all__ = ["PairEstimate", "PairwiseBackend", "TrajectoryFrame", "track_observations"]
-
-from scene_recall.odometry.hybrid import HybridConfig, HybridRGBDBackend
-from scene_recall.odometry.icp import DepthICPBackend, ICPConfig
-from scene_recall.odometry.sparse import SparseConfig, SparseRGBDBackend
-
-__all__ += [
+__all__ = [
     "DepthICPBackend",
     "HybridConfig",
     "HybridRGBDBackend",
     "ICPConfig",
+    "PairEstimate",
+    "PairwiseBackend",
     "SparseConfig",
     "SparseRGBDBackend",
+    "TrajectoryFrame",
+    "track_observations",
 ]
+
+_BACKEND_MODULES = {
+    "DepthICPBackend": "icp",
+    "HybridConfig": "hybrid",
+    "HybridRGBDBackend": "hybrid",
+    "ICPConfig": "icp",
+    "SparseConfig": "sparse",
+    "SparseRGBDBackend": "sparse",
+}
+
+
+def __getattr__(name: str):
+    """Load backend exports on demand while preserving package-level imports."""
+    if name not in _BACKEND_MODULES:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(f"{__name__}.{_BACKEND_MODULES[name]}")
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

@@ -4,9 +4,8 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
-from test_depth_registration import render_room
+from helpers.odometry import StubDepth, StubSparse, room_pair
 
-from scene_recall.data import Calibration, Observation
 from scene_recall.odometry import (
     DepthICPBackend,
     HybridConfig,
@@ -17,17 +16,6 @@ from scene_recall.odometry import (
 )
 from scene_recall.odometry.evaluation import evaluate_trajectory, pose_error
 from scene_recall.odometry.icp import increment
-
-
-def room_pair():
-    K = np.array([[360, 0, 159.5], [0, 360, 127.5], [0, 0, 1.0]])
-    shape = (256, 320)
-    truth = increment(np.array([0.018, -0.012, 0.008, 0.007, -0.004, 0.003]))
-    calibration = Calibration(K, K, np.eye(4), shape, shape)
-    blank = np.zeros((*shape, 3), np.uint8)
-    source = Observation(0, blank, render_room(K, shape, np.eye(4)))
-    target = Observation(1, blank, render_room(K, shape, np.linalg.inv(truth)))
-    return source, target, calibration, truth
 
 
 @pytest.mark.parametrize("direction", ["forward", "backward"])
@@ -89,24 +77,6 @@ def test_depth_failures_never_accumulate_candidates(kind):
         ]
         == 1
     )
-
-
-class StubSparse:
-    def __init__(self, pair):
-        self.pair = pair
-
-    def estimate(self, *args):
-        return self.pair
-
-
-class StubDepth:
-    def __init__(self, pair):
-        self.pair = pair
-        self.initial = None
-
-    def refine(self, source, target, calibration, initial):
-        self.initial = initial
-        return self.pair
 
 
 @pytest.mark.parametrize("policy", ["sparse", "lost"])

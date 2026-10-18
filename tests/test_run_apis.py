@@ -4,7 +4,7 @@ import subprocess
 import sys
 
 import pytest
-from test_mapping_cli import make_run
+from helpers.runs import make_run
 
 from scene_recall.odometry.runner import run_odometry
 from scene_recall.odometry.sparse import SparseConfig

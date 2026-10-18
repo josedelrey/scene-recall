@@ -2,6 +2,7 @@
 
 import csv
 import json
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -19,10 +20,28 @@ def _pose_array(poses) -> np.ndarray:
 def save_run(
     output: Path, rows: list[TrajectoryFrame], report: dict, start: int
 ) -> None:
-    """Write poses, per-frame diagnostics, and a strict JSON evaluation report."""
-    # Serialize first so invalid report values cannot leave partial output files.
+    """Stage a complete run and atomically publish it to a fresh directory.
+
+    Failures discard staging files. Existing destinations, including empty
+    directories and dangling symlinks, are refused without modifying them.
+    """
+    if output.exists() or output.is_symlink():
+        raise ValueError("output already exists, choose a new output directory")
     serialized = json.dumps(report, indent=2, allow_nan=False) + "\n"
-    output.mkdir(parents=True, exist_ok=True)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".odometry-", dir=output.parent) as temp:
+        staging = Path(temp) / "result"
+        staging.mkdir()
+        _write_run(staging, rows, serialized, start)
+        if output.exists() or output.is_symlink():
+            raise ValueError("output appeared during export, refusing overwrite")
+        staging.rename(output)
+
+
+def _write_run(
+    output: Path, rows: list[TrajectoryFrame], serialized: str, start: int
+) -> None:
+    """Write scientific files inside a caller-owned staging directory."""
     np.savez_compressed(
         output / "trajectory.npz",
         frame_index=np.array([row.frame_index for row in rows], dtype=np.int64),

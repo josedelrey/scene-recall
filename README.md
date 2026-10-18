@@ -65,6 +65,11 @@ and mapping preserves those boundaries. Reference poses are used for diagnostics
 
 ## Development checks
 
+GitHub Actions runs these checks on Python 3.12 in separate locked base and
+visualization environments. The visualization job runs the full suite with the
+Rerun SDK installed. Tests use synthetic inputs and require no external dataset.
+Shared test builders live in `tests/helpers/`.
+
 ```bash
 uv run --locked pytest -q
 uv run --locked ruff check .

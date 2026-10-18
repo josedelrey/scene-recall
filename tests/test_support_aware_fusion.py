@@ -135,8 +135,8 @@ def test_empty_evaluation_population_remains_unavailable():
 
 
 def test_runner_repeats_without_target_leakage_and_rejects_changed_inputs(tmp_path):
+    from helpers.runs import continuous_run
     from PIL import Image
-    from test_heldout import continuous_run
 
     from scene_recall.mapping.heldout import run_heldout
     from scene_recall.mapping.voxel import MappingConfig
@@ -185,7 +185,7 @@ def test_runner_repeats_without_target_leakage_and_rejects_changed_inputs(tmp_pa
 
 
 def test_unpaired_chunk_keeps_geometry_and_withholds_scores(tmp_path):
-    from test_heldout import continuous_run
+    from helpers.runs import continuous_run
 
     from scene_recall.mapping.heldout import run_heldout
     from scene_recall.mapping.voxel import MappingConfig

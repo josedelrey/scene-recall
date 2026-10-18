@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from scene_recall.data import Calibration, Observation
+from scene_recall.geometry.transforms import is_rigid
 from scene_recall.mapping.evaluation import cloud_statistics, compare_clouds
 from scene_recall.mapping.voxel import (
     MappingConfig,
@@ -14,11 +15,7 @@ from scene_recall.mapping.voxel import (
     VoxelMap,
     sample_observation,
 )
-from scene_recall.odometry.pipeline import (
-    TrajectoryFrame,
-    is_rigid,
-    validate_trajectory,
-)
+from scene_recall.odometry.pipeline import TrajectoryFrame, validate_trajectory
 
 
 def select_keyframes(frames: list[TrajectoryFrame], stride: int) -> list[int]:

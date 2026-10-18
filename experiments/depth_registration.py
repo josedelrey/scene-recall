@@ -20,6 +20,7 @@ from PIL import Image, ImageDraw
 
 from scene_recall.datasets.scannet import ScanNetReader
 from scene_recall.geometry.camera import transform_points
+from scene_recall.geometry.transforms import is_rigid
 from scene_recall.odometry.evaluation import pose_error
 from scene_recall.odometry.icp import (
     correspondences,
@@ -28,7 +29,6 @@ from scene_recall.odometry.icp import (
     linearization,
     make_cloud,
 )
-from scene_recall.odometry.pipeline import is_rigid
 
 FACTORS = (4, 2, 1)
 DISTANCES_M = (0.12, 0.08, 0.05)
