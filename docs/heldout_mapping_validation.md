@@ -162,3 +162,7 @@ scores, with reproduction commands. Production fusion remains unchanged.
 The [motion-budget keyframe experiment](keyframe_selection.md) compares optional
 motion-based observation selection against temporal fusion, reserving the saved
 targets before selection and retaining the same chunk budgets and boundaries.
+
+The [volumetric fusion investigation](volumetric_mapping.md) compares the
+surface-voxel baseline against TSDF point and connected-mesh representations
+using unchanged training frames, poses and sampled depth on Desk, RPY and XYZ.

@@ -51,6 +51,10 @@ The optional [motion-budget keyframe experiment](keyframe_selection.md) compares
 estimated-motion selection with this temporal policy at identical observation
 budgets and frozen held-out views. It leaves the ordinary mapping CLI unchanged.
 
+An optional [volumetric reconstruction](volumetric_mapping.md) experiment fuses
+projective signed distances and exports connected colored meshes. The surface
+voxels described here remain the default and the reproducible baseline.
+
 Each tracking failure starts an independent segment. A `lost` frame is the
 first camera of the new segment and is eligible for integration. Segment
 boundaries must agree with status, ordered IDs and identity reset poses.

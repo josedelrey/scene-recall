@@ -45,6 +45,7 @@ preserves those boundaries. Reference poses are used for diagnostics only.
 | Backends, failure policy, exports and trajectory metrics | [RGB-D odometry](docs/odometry.md) |
 | Matched comparisons, analysis and repeat verification | [Odometry comparison workflow](docs/odometry_backend_comparison.md) |
 | Voxel fusion, local submaps, exports and viewer | [RGB-D mapping](docs/rgbd_mapping.md) |
+| Optional TSDF fusion, connected meshes and pose-bias controls | [Volumetric mapping investigation](docs/volumetric_mapping.md) |
 | Withheld fusion views, rendering and paired scoring | [Held-out map validation](docs/heldout_mapping_validation.md) |
 
 ## Development checks
