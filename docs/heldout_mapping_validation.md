@@ -280,7 +280,7 @@ so resource observations are not isolated integration benchmarks.
 
 ## Verification and remaining limits
 
-All 523 tests pass, including 14 new held-out tests. Ruff lint and formatting
+The initial validation passed all 523 tests, including 14 new held-out tests. Ruff lint and formatting
 checks and `git diff --check` pass. Synthetic tests check exact analytic ray/disc
 visibility against brute force, foreground z-buffer occlusion, behind-camera
 rejection, inverse camera transforms, a rotated plane and the evaluation lattice
@@ -301,12 +301,81 @@ results do not support upgrading that earlier evidence into a general claim of
 more accurate Hybrid maps. End-to-end improvements remain useful as a
 self-consistency diagnostic and need external localization evaluation.
 
+## Interpreting the GT-pose residual
+
+The 67.94 mm Desk common MAE measures multiview depth consistency under the
+surface-disc renderer. It combines sensor/reference disagreement, visibility,
+scene changes and reconstruction approximations. It cannot be interpreted as
+pure sensor noise, a voxel-resolution floor or independent surface accuracy.
+There is no demonstrated pose-direction, depth-unit, gauge or lattice-origin
+error in this evaluation.
+
+Focused controls retain the same source inputs, targets, poses and filtering.
+Each row below compares predictions on one exact finite intersection inside
+the original common mask. Pixel populations differ between rows.
+
+| GT control | Common pixels | MAE before → after (mm) |
+| --- | ---: | ---: |
+| All raw training samples → nearest training frame | 630,647 | 68.81 → 22.71 |
+| All raw samples → 2 cm voxel averaging | 728,362 | 79.38 → 67.93 |
+| 2 cm → 1 cm voxels, fixed 10 mm discs | 728,356 | 67.93 → 77.41 |
+| Raw samples, 10 mm → 2.5 mm discs | 659,353 | 69.52 → 47.49 |
+
+Broader temporal/viewpoint support and nearest-z foreground selection explain
+much of the residual's growth. Temporal distance, viewpoint, source count and
+scene change are confounded. Finer voxels do not solve this residual. Voxel
+averaging currently reduces it. A noiseless plane with the real GT camera
+motion gives 2.31 mm voxel-rendering MAE, constraining smooth-surface
+approximation error without testing real silhouettes or calibration.
+
+The original GT residual has −59.83 mm signed mean. Errors above 200 mm occupy
+5.56% of common pixels but contribute 46.85% of absolute error. Single-frame
+voxel winners contribute 61.46% of absolute error. These are associations, not
+proof that those samples are invalid. Pruning, occlusion trimming and smaller
+footprints can remove real geometry or expose deeper surfaces through gaps.
+Calibration, depth uncertainty and physical scene changes remain unresolved
+contributors. The adapter follows [TUM's published registered-depth policy](https://cvg.cit.tum.de/data/datasets/rgbd-dataset/file_formats),
+including the already-applied scale correction.
+
+Sparse remains better than Hybrid with reference targets in the raw-sample,
+1 cm voxel and smaller-footprint controls. The reference-mode-only common mask
+also preserves the ordering. Reusing the original common pixels across the
+10/15/20 mm footprints gives GT MAE 67.94/81.41/93.35 mm and Sparse
+83.89/87.64/93.14 mm. GT is therefore not a universal lower bound or an additive
+baseline to subtract from backend errors. Estimated-target consistency still
+includes correlated pose errors. Keep the original metrics and defaults.
+
+Reproduce these controls with the original three-radius Desk output:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 uv run --locked python \
+  experiments/diagnose_heldout_residuals.py \
+  --saved outputs/heldout/final/desk \
+  --odometry-run \
+    outputs/odometry/tum_cross_sequence/rgbd_dataset_freiburg1_desk_0_all_sparse \
+    outputs/odometry/tum_cross_sequence/rgbd_dataset_freiburg1_desk_0_all_hybrid \
+  --output-dir outputs/heldout/diagnostics/desk_residuals_reproduction
+```
+
+The probe verifies the full canonical input and regenerates original predictions
+within 1e-12 m absolute tolerance. It retains per-source renders, controlled
+predictions, paired statistics and provenance in ignored outputs. It expects
+one paired initial submap with stride 4. `--analyze-only` reuses retained
+diagnostic arrays and their verified-input provenance to regenerate summaries
+and support/synthetic controls. Rendering requires a fresh output directory.
+This offline diagnostic retains about 150 MiB of compressed arrays and uses
+substantial temporary memory.
+
+After adding the residual diagnostics, all 526 tests pass. The three additional
+tests cover fixed and empty comparison populations and analytic plane geometry.
+Repository-wide Ruff lint/format checks and `git diff --check` pass.
+
 The main unresolved limitations are a single primary sequence, highly
 correlated interleaved views, sensor/reference timing and calibration error,
 dynamic objects, point-disc rendering, first-pose alignment sensitivity and
 surface fusion without free-space reasoning. The nonzero GT baseline is an
-empirical warning about the combined evaluation/representation floor, not a
-calibrated bound on attainable accuracy. No image explains causality by itself.
+empirical warning about the combined evaluation/representation residual. It is
+not a calibrated bound on attainable accuracy. No image explains causality by itself.
 A future benchmark should add independent scenes and wider temporal gaps,
 retain the fixed-population and coverage reporting, and test representation or
 pose changes against this baseline before expanding the mapping system.
