@@ -10,8 +10,26 @@ import numpy as np
 def verify(first: Path, second: Path) -> dict:
     a, b = [json.loads((path / "report.json").read_text()) for path in (first, second)]
     heldout = a.get("experiment") == "held_out_fusion_views"
+    consensus = a.get("experiment") == "single_frame_training_free_space_consensus"
     keys = (
         (
+            "experiment",
+            "rule",
+            "saved_report_sha256",
+            "saved_arrays_sha256",
+            "odometry",
+            "mapping_config",
+            "split",
+            "unavailable_views",
+            "verified_input_sha256",
+            "script_sha256",
+            "package_code_sha256",
+            "environment",
+            "pooled",
+            "views",
+        )
+        if consensus
+        else (
             "format_version",
             "experiment",
             "mapping_config",
@@ -40,16 +58,23 @@ def verify(first: Path, second: Path) -> dict:
     for key in keys:
         if a[key] != b[key]:
             raise ValueError(f"mapping reports differ: {key}")
-    if a["environment"]["code_sha256"] != b["environment"]["code_sha256"]:
+    if consensus:
+        clouds = lambda report: [
+            {key: value for key, value in row.items() if key != "consensus_seconds"}
+            for row in report["clouds"]
+        ]
+        if clouds(a) != clouds(b):
+            raise ValueError("consensus cloud reports differ")
+    elif a["environment"]["code_sha256"] != b["environment"]["code_sha256"]:
         raise ValueError("mapping package code fingerprints differ")
     if heldout:
         if a["odometry"] != b["odometry"]:
             raise ValueError("odometry identity differs")
-    else:
+    elif not consensus:
         for key in ("backend", "report_sha256", "trajectory_sha256"):
             if a["odometry"][key] != b["odometry"][key]:
                 raise ValueError(f"odometry identity differs: {key}")
-    provenance = "inputs.json" if heldout else "keyframes.json"
+    provenance = "inputs.json" if heldout or consensus else "keyframes.json"
     if (first / provenance).read_bytes() != (second / provenance).read_bytes():
         raise ValueError("input provenance differs")
     archives = sorted(path.name for path in first.glob("*.npz"))

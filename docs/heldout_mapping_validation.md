@@ -153,3 +153,8 @@ lower depth-objective residual do not guarantee better external geometry.
 Interpret reference-target and estimated-target results separately. Independent
 scenes, wider temporal gaps and independent surface references are needed to
 bound generalization and distinguish physical causes.
+
+The [support-aware fusion experiment](support_aware_fusion.md) tests one fixed
+training-view free-space consensus rule against the saved Sparse, Hybrid and GT
+baselines. It reports paired accuracy, lost coverage and missing-penalized
+scores, with reproduction commands. Production fusion remains unchanged.
