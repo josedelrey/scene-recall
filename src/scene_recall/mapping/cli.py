@@ -19,7 +19,7 @@ import scene_recall
 from scene_recall.datasets.scannet import ScanNetReader
 from scene_recall.datasets.tum import TUMConfig, TUMReader
 from scene_recall.mapping.evaluation import depth_consistency, summarize_consistency
-from scene_recall.mapping.export import export_submap, save_viewer
+from scene_recall.mapping.export import export_submap
 from scene_recall.mapping.pipeline import reconstruct, validate_trajectory
 from scene_recall.mapping.voxel import MappingConfig
 from scene_recall.odometry.pipeline import TrajectoryFrame, is_rigid
@@ -110,7 +110,7 @@ def _code_hash() -> str:
     digest = hashlib.sha256()
     root = Path(scene_recall.__file__).parent
     for path in sorted(root.rglob("*")):
-        if path.suffix in (".py", ".html"):
+        if path.suffix == ".py":
             digest.update(str(path.relative_to(root)).encode())
             digest.update(path.read_bytes())
     return digest.hexdigest()
@@ -217,7 +217,7 @@ def run_mapping(
     started = perf_counter()
     digest = hashlib.sha256()
     keyframe_metadata = {}
-    submaps, views, pairs = [], [], []
+    submaps, pairs = [], []
     tail = deque(maxlen=max(pair_offsets))
     excluded_cross_segment = excluded_reference = 0
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -276,7 +276,7 @@ def run_mapping(
                         pairs.append(entry)
                 tail.append(current)
             submaps.append(submap.report)
-            views.append(export_submap(staging, submap, source["start"]))
+            export_submap(staging, submap, source["start"])
             print(
                 f"Built submap {submap.submap_id}, segment {submap.segment_id}: "
                 f"{len(submap.keyframes)} keyframes, {len(submap.estimated.points)} voxels",
@@ -291,7 +291,6 @@ def run_mapping(
         (staging / "keyframes.json").write_text(
             json.dumps(keyframes, indent=2, allow_nan=False) + "\n"
         )
-        save_viewer(staging, views)
         report = {
             "format_version": 1,
             "representation": "equal_keyframe_weighted_colored_surface_voxels",

@@ -13,7 +13,8 @@ The implementation lives in `src/scene_recall/mapping/`:
 - `voxel.py`: filtering, native-depth sampling, RGB visibility and voxel fusion.
 - `pipeline.py`: keyframe selection, continuity validation and bounded submaps.
 - `evaluation.py`: cross-view depth consistency and paired map distances.
-- `export.py` and `viewer.html`: archives, colored PLY, previews and offline 3D.
+- `export.py`: scientific NPZ archives and colored PLY.
+- `../visualization/`: optional Rerun recording export from saved results.
 - `cli.py`: dataset/export pairing, provenance checks and atomic publication.
 
 The representation averages surface samples within metric voxel cells.
@@ -68,8 +69,8 @@ T_MC_D[i] = inverse(T_SM) @ T_SC_D[i]
 
 Submaps in the same segment retain `T_SM`, which can place their estimated
 geometry together without inventing new constraints. Transforms between
-disconnected segments remain unknown. The viewer selects independent submaps
-and never overlays unrelated segment origins as a global scene.
+disconnected segments remain unknown. The Rerun workspace separates independent segments and preserves each
+submap's local diagnostic alignment. See [visualization](visualization.md).
 
 For a reference diagnostic, let `a` be the first valid reference keyframe in a
 submap. The separate reference alignment is:
@@ -109,7 +110,7 @@ calibration, timestamps, reference arrays and per-frame provenance must match
 the saved run. The runner rereads all canonical inputs, including nonkeyframes,
 and verifies the original RGB/depth/reference SHA-256 fingerprint before
 publishing output. The report also hashes the odometry report, trajectory
-archive and current package sources, including the HTML template. Source
+archive and current Python package sources. Source
 indices and individual keyframe input hashes remain in `keyframes.json`.
 Malformed or mismatched inputs discard the staging directory. Existing outputs
 are refused. Original odometry runs are preserved.
@@ -121,16 +122,16 @@ Each completed run contains:
 - `keyframes.json`: selected local/source indices, timestamps, input hashes and
   original adapter provenance.
 - `submap_NNN_estimated.npz/.ply` and `submap_NNN_reference.npz/.ply`.
-- `submap_NNN.png`: paired colored previews at a shared scale and orientation.
-- `viewer.html`: a self-contained WebGL viewer with synchronized orbit/zoom,
-  camera paths, submap selection, minimum frame support and support coloring.
 
-Open `viewer.html` in a WebGL-capable desktop browser. It needs no network,
-server, CDN or extra Python dependency. Display sampling is deterministic and
-limited to 60,000 points per panel. Exported maps and evaluation use all voxels.
+Generate the primary visualization artifact, a self-contained `.rrd` recording,
+with the optional [Rerun exporter](visualization.md). It reads these saved results
+and the original source images without rerunning tracking, fusion or evaluation.
+The custom HTML viewer and its PNG previews have been retired. Existing saved
+NPZ/PLY/JSON runs remain usable without conversion or reconstruction.
+
 Raw RGB-D retention is bounded by the submap population and diagnostic history.
-Reports, provenance and viewer payloads grow with the number of submaps, so
-this runner targets bounded offline experiments.
+Reports and provenance grow with submap count, so this runner targets bounded
+offline experiments.
 
 ## Geometric diagnostics
 
@@ -203,6 +204,5 @@ and estimated target poses separately with the
 
 Total runtime includes rereading and hashing all inputs, sampling, fusion,
 diagnostics and exports. It excludes the prior odometry run and does not isolate
-fusion latency. Reports and viewer payloads grow with submap count. The runner
-is intended for offline processing. Interactive WebGL behavior still needs
-manual browser verification beyond static previews and JavaScript syntax checks.
+fusion latency. Reports and provenance grow with submap count. The runner
+is intended for offline processing. Recording export is a separate optional step.

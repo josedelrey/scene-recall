@@ -284,3 +284,10 @@ provides independent motion-capture references and epoch timestamps. Time-based
 RPE supplements the existing frame-based metrics when a valid clock is present.
 See [TUM RGB-D support](tum.md) for source conventions, calibration limitations,
 association policy, commands, and report fields.
+
+## Native visualization
+
+Use the optional [Rerun recording exporter](visualization.md) with
+`--odometry-run` to inspect accepted trajectories, calibrated RGB-D observations,
+tracking diagnostics and first-pose-aligned reference poses. This reads saved
+results without running a backend. Reference poses remain diagnostic.

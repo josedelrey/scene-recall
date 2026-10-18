@@ -123,10 +123,6 @@ def test_end_to_end_disconnected_maps_exports_and_repeatability(tmp_path):
     assert b"coordinate_frame segment_0_submap_0" in header
     with np.load(outputs[0] / "submap_000_estimated.npz") as cloud:
         assert len(payload) == len(cloud["points"]) * 31
-    viewer = (outputs[0] / "viewer.html").read_text()
-    assert "__MAP_DATA__" not in viewer
-    assert "https://" not in viewer
-    assert (outputs[0] / "submap_000.png").exists()
     keys = json.loads((outputs[0] / "keyframes.json").read_text())
     assert [k["source_frame_index"] for k in keys] == [0, 1, 2]
     with pytest.raises(ValueError, match="already exists"):

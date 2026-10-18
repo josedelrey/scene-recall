@@ -30,9 +30,23 @@ uv run --locked python scripts/rgbd_mapping.py \
   --output-dir outputs/mapping/desk_sparse_200
 ```
 
-Open the generated `viewer.html` in a WebGL-capable browser. Sparse is the
-default backend. Tracking losses create independent segments, and mapping
-preserves those boundaries. Reference poses are used for diagnostics only.
+Generate a self-contained Rerun recording and open it in the native viewer:
+
+```bash
+uv sync --locked --extra visualization
+uv run --locked --extra visualization python scripts/rgbd_recording.py \
+  --mapping-run outputs/mapping/desk_sparse_200 \
+  --output outputs/visualization/desk_sparse_200.rrd
+uv run --locked --extra visualization rerun outputs/visualization/desk_sparse_200.rrd
+```
+
+The recording embeds RGB-D keyframes, maps, poses, diagnostics and its viewer
+layout. Opening it needs no dataset or network. NPZ, PLY and JSON remain the
+scientific data formats. See [Rerun visualization](docs/visualization.md) for
+image-free export, relocated runs and display controls.
+
+Sparse is the default backend. Tracking losses create independent segments,
+and mapping preserves those boundaries. Reference poses are used for diagnostics only.
 
 ## Documentation
 
@@ -44,7 +58,8 @@ preserves those boundaries. Reference poses are used for diagnostics only.
 | TUM input, calibration and timestamp association | [TUM support](docs/tum.md) |
 | Backends, failure policy, exports and trajectory metrics | [RGB-D odometry](docs/odometry.md) |
 | Matched comparisons, analysis and repeat verification | [Odometry comparison workflow](docs/odometry_backend_comparison.md) |
-| Voxel fusion, local submaps, exports and viewer | [RGB-D mapping](docs/rgbd_mapping.md) |
+| Voxel fusion, local submaps and scientific exports | [RGB-D mapping](docs/rgbd_mapping.md) |
+| Native offline visualization and recordings | [Rerun workflow](docs/visualization.md) |
 | Optional TSDF fusion, connected meshes and pose-bias controls | [Volumetric mapping investigation](docs/volumetric_mapping.md) |
 | Withheld fusion views, rendering and paired scoring | [Held-out map validation](docs/heldout_mapping_validation.md) |
 
@@ -54,4 +69,10 @@ preserves those boundaries. Reference poses are used for diagnostics only.
 uv run --locked pytest -q
 uv run --locked ruff check .
 uv run --locked ruff format --check .
+```
+
+Recording integration tests run when the visualization extra is installed:
+
+```bash
+uv run --locked --extra visualization pytest -q tests/test_visualization.py
 ```
