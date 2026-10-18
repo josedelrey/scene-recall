@@ -19,3 +19,6 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.16.9",
 ]
+
+[tool.setuptools.package-data]
+scene_recall = ["mapping/viewer.html"]

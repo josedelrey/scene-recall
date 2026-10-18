@@ -12,3 +12,4 @@ SceneRecall aims to provide persistent open-vocabulary 3D scene memory for robot
 - [TUM RGB-D reading and evaluation](docs/tum.md)
 - [Initial cross-dataset odometry evaluation](docs/tum_odometry_evaluation.md)
 - [Cross-sequence odometry evaluation](docs/tum_cross_sequence_evaluation.md)
+- [Multiframe RGB-D mapping](docs/rgbd_mapping.md)

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>SceneRecall RGB-D submaps</title>
+<style>
+body{margin:0;background:#101a24;color:#e1eaf3;font:15px system-ui}header{padding:18px 24px}h1{font-size:23px;margin:0 0 10px}select,button,input{margin:0 14px 0 4px}main{display:flex;height:76vh}section{width:50%;position:relative}canvas{width:100%;height:100%;display:block;touch-action:none}h2{position:absolute;top:8px;left:20px;font-size:16px;pointer-events:none}footer{padding:12px 24px;color:#aebfce}#info{margin-top:10px}
+</style>
+<header><h1>SceneRecall · colored RGB-D submaps</h1>
+<label>Submap <select id="map"></select></label><label>Minimum frame support <input id="support" type="number" min="1" max="1000" value="1" style="width:55px"></label>
+<label><input type="checkbox" id="supportColor">Color by support</label><button id="reset">Reset view</button>
+<div id="info"></div></header><main><section><h2>Estimated poses</h2><canvas id="estimated"></canvas></section><section><h2>Reference poses · first-pose alignment</h2><canvas id="reference"></canvas></section></main>
+<footer>Drag either panel to orbit · wheel to zoom · synchronized metric views · yellow camera path<br>
+Each submap has its own coordinate frame. Different segments have no estimated relationship. Reference alignment is diagnostic. Viewer shows at most 60,000 points per panel. NPZ and PLY preserve all voxels.</footer>
+<script>
+const maps=__MAP_DATA__;
+const select=document.querySelector('#map'), info=document.querySelector('#info');
+let yaw=0.55,pitch=-0.4,zoom=1,center=[0,0,0],extent=1,current;
+const vertex=`attribute vec3 position; attribute vec3 color; attribute float support;
+uniform vec3 center; uniform vec4 view; uniform float aspect; uniform float minSupport; uniform float colorMode;
+varying vec3 vColor; void main(){vec3 p=position-center;
+vec3 a=vec3(cos(view.x)*p.x+sin(view.x)*p.z,p.y,-sin(view.x)*p.x+cos(view.x)*p.z);
+vec3 b=vec3(a.x,cos(view.y)*a.y-sin(view.y)*a.z,sin(view.y)*a.y+cos(view.y)*a.z);
+gl_Position=vec4(b.x*view.z/aspect,-b.y*view.z,b.z*view.z/20.0,1.0);
+if(support<minSupport)gl_Position=vec4(2.0,2.0,2.0,1.0);
+gl_PointSize=view.w; float t=min(support/8.0,1.0);vColor=mix(color,mix(vec3(0.25,0.35,0.7),vec3(1.0,0.65,0.15),t),colorMode);}`;
+const fragment=`precision mediump float; varying vec3 vColor; void main(){gl_FragColor=vec4(vColor,1.0);}`;
+function panel(name){
+ const canvas=document.getElementById(name),gl=canvas.getContext('webgl',{antialias:true});
+ if(!gl)throw new Error('WebGL is unavailable in this browser');
+ function shader(type,code){const s=gl.createShader(type);gl.shaderSource(s,code);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(s));return s}
+ const program=gl.createProgram();gl.attachShader(program,shader(gl.VERTEX_SHADER,vertex));gl.attachShader(program,shader(gl.FRAGMENT_SHADER,fragment));gl.linkProgram(program);
+ if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(program));gl.useProgram(program);
+ const buffers={};for(const attribute of ['position','color','support']){buffers[attribute]=gl.createBuffer()}
+ const uniforms={};for(const u of ['center','view','aspect','minSupport','colorMode'])uniforms[u]=gl.getUniformLocation(program,u);
+ let count=0,pathCount=0;
+ function upload(){const data=current[name],path=current.trajectories[name].flat();count=data.support.length;pathCount=path.length/3;
+ const positions=new Float32Array([...data.points,...path]);
+ const colors=new Float32Array([...data.colors.map(v=>v/255),...path.map((v,i)=>[1,0.8,0.2][i%3])]);
+ const supports=new Float32Array([...data.support,...Array(pathCount).fill(10000)]);
+ for(const [attr,values,size] of [['position',positions,3],['color',colors,3],['support',supports,1]]){gl.bindBuffer(gl.ARRAY_BUFFER,buffers[attr]);gl.bufferData(gl.ARRAY_BUFFER,values,gl.STATIC_DRAW);const loc=gl.getAttribLocation(program,attr);gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,size,gl.FLOAT,false,0,0)}}
+ function draw(){const ratio=window.devicePixelRatio||1;canvas.width=Math.round(canvas.clientWidth*ratio);canvas.height=Math.round(canvas.clientHeight*ratio);gl.viewport(0,0,canvas.width,canvas.height);gl.clearColor(0.063,0.102,0.141,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);
+ gl.uniform3fv(uniforms.center,center);gl.uniform4f(uniforms.view,yaw,pitch,zoom/extent,2*ratio);gl.uniform1f(uniforms.aspect,canvas.width/canvas.height);gl.uniform1f(uniforms.minSupport,Number(document.querySelector('#support').value));gl.uniform1f(uniforms.colorMode,document.querySelector('#supportColor').checked?1:0);gl.drawArrays(gl.POINTS,0,count);gl.uniform1f(uniforms.colorMode,0);gl.drawArrays(gl.LINE_STRIP,count,pathCount)}
+ let down=false,x=0,y=0;canvas.onpointerdown=e=>{down=true;x=e.clientX;y=e.clientY;canvas.setPointerCapture(e.pointerId)};canvas.onpointerup=()=>down=false;canvas.onpointermove=e=>{if(!down)return;yaw+=(e.clientX-x)*0.008;pitch+=(e.clientY-y)*0.008;x=e.clientX;y=e.clientY;redraw()};canvas.onwheel=e=>{e.preventDefault();zoom=Math.max(0.05,Math.min(100,zoom*Math.exp(-e.deltaY*0.001)));redraw()};return{upload,draw}}
+let panels=[];
+function redraw(){panels.forEach(p=>p.draw())}
+function load(){current=maps[Number(select.value)];if(!current){info.textContent='No submaps available';return}
+ const lo=[Infinity,Infinity,Infinity],hi=[-Infinity,-Infinity,-Infinity];
+ for(const name of ['estimated','reference'])current[name].points.forEach((v,i)=>{let axis=i%3;lo[axis]=Math.min(lo[axis],v);hi[axis]=Math.max(hi[axis],v)});
+ center=lo.map((v,i)=>Number.isFinite(v)?(v+hi[i])/2:0);extent=Math.max(0.1,...hi.map((v,i)=>Number.isFinite(v)?(v-lo[i])*0.7:0));zoom=1;yaw=0.55;pitch=-0.4;
+ info.textContent=`Independent segment ${current.segment} · ${current.estimated.total.toLocaleString()} estimated voxels · ${current.reference.total.toLocaleString()} reference voxels`;
+ panels.forEach(p=>p.upload());redraw()}
+maps.forEach((m,i)=>{const option=document.createElement('option');option.value=i;option.textContent=`${m.id} / segment ${m.segment}`;select.append(option)});
+try{panels=[panel('estimated'),panel('reference')];load()}catch(e){info.textContent=e.message}
+select.onchange=load;document.querySelector('#reset').onclick=load;document.querySelector('#support').oninput=redraw;document.querySelector('#supportColor').onchange=redraw;window.onresize=redraw;
+</script></html>
