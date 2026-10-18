@@ -9,27 +9,49 @@ import numpy as np
 
 def verify(first: Path, second: Path) -> dict:
     a, b = [json.loads((path / "report.json").read_text()) for path in (first, second)]
-    for key in (
-        "config",
-        "verified_canonical_input_sha256",
-        "calibration",
-        "frame_count",
-        "keyframe_count",
-        "segment_count",
-        "submaps",
-        "consistency",
-    ):
+    heldout = a.get("experiment") == "held_out_fusion_views"
+    keys = (
+        (
+            "format_version",
+            "experiment",
+            "mapping_config",
+            "offset",
+            "render",
+            "split",
+            "source",
+            "calibration",
+            "verified_canonical_input_sha256",
+            "submaps",
+            "summaries",
+            "views",
+        )
+        if heldout
+        else (
+            "config",
+            "verified_canonical_input_sha256",
+            "calibration",
+            "frame_count",
+            "keyframe_count",
+            "segment_count",
+            "submaps",
+            "consistency",
+        )
+    )
+    for key in keys:
         if a[key] != b[key]:
             raise ValueError(f"mapping reports differ: {key}")
     if a["environment"]["code_sha256"] != b["environment"]["code_sha256"]:
         raise ValueError("mapping package code fingerprints differ")
-    for key in ("backend", "report_sha256", "trajectory_sha256"):
-        if a["odometry"][key] != b["odometry"][key]:
-            raise ValueError(f"odometry identity differs: {key}")
-    if (first / "keyframes.json").read_bytes() != (
-        second / "keyframes.json"
-    ).read_bytes():
-        raise ValueError("keyframe provenance differs")
+    if heldout:
+        if a["odometry"] != b["odometry"]:
+            raise ValueError("odometry identity differs")
+    else:
+        for key in ("backend", "report_sha256", "trajectory_sha256"):
+            if a["odometry"][key] != b["odometry"][key]:
+                raise ValueError(f"odometry identity differs: {key}")
+    provenance = "inputs.json" if heldout else "keyframes.json"
+    if (first / provenance).read_bytes() != (second / provenance).read_bytes():
+        raise ValueError("input provenance differs")
     archives = sorted(path.name for path in first.glob("*.npz"))
     if archives != sorted(path.name for path in second.glob("*.npz")):
         raise ValueError("map archive sets differ")
@@ -42,7 +64,9 @@ def verify(first: Path, second: Path) -> dict:
             if left.files != right.files:
                 raise ValueError(f"map array names differ: {name}")
             for key in left.files:
-                if not np.array_equal(left[key], right[key]):
+                if not np.array_equal(
+                    left[key], right[key], equal_nan=left[key].dtype.kind in "fc"
+                ):
                     raise ValueError(f"map arrays differ: {name}/{key}")
                 arrays += 1
     return {

@@ -277,8 +277,11 @@ Timing includes rereading and hashing every input, sampling, fusion,
 diagnostics and exports. It excludes the earlier odometry run. It does not
 isolate integration latency or establish real-time operation.
 
-The next useful steps are motion/overlap-aware keyframe selection, voxel-size
-and submap-length sensitivity, and held-out view validation. Then add surface
+Held-out view validation is now implemented and reported in
+[Held-out RGB-D map validation](heldout_mapping_validation.md). It qualifies the
+apparent Hybrid advantage above by separating reference-pose geometry from
+estimated-pose self-consistency. The next useful steps are motion/overlap-aware
+keyframe selection and voxel-size and submap-length sensitivity. Then add surface
 normals or a TSDF if reconstruction requirements justify them. Introduce
 multiframe pose constraints, relocalization or loop closure when map evidence
 makes their benefit measurable. Persistent semantic memory can build on stable

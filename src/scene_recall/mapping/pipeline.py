@@ -95,14 +95,21 @@ def build_submap(
         if frame.row.reference_pose is not None and is_rigid(frame.row.reference_pose)
     ]
     anchor = valid_reference[0].row if valid_reference else None
-    T_MW = (
-        T_MS @ anchor.T_SC_D @ np.linalg.inv(anchor.reference_pose)
-        if anchor is not None
-        else None
-    )
+    T_MW = None
+    if anchor is not None:
+        # Cancel the first-pose gauge analytically for identical reference grids.
+        T_MW = (
+            np.linalg.inv(anchor.reference_pose)
+            if anchor is keyframes[0].row
+            else T_MS @ anchor.T_SC_D @ np.linalg.inv(anchor.reference_pose)
+        )
     for frame in keyframes:
         row = frame.row
-        estimated.integrate(frame.samples, T_MS @ row.T_SC_D, row.frame_index)
+        estimated.integrate(
+            frame.samples,
+            np.eye(4) if frame is keyframes[0] else T_MS @ row.T_SC_D,
+            row.frame_index,
+        )
         if row.reference_pose is not None and is_rigid(row.reference_pose):
             reference.integrate(
                 frame.samples, T_MW @ row.reference_pose, row.frame_index

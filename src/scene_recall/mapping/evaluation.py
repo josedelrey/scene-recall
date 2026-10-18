@@ -151,3 +151,106 @@ def compare_clouds(estimated: VoxelCloud, reference: VoxelCloud, size: float) ->
             "matched_distance_m": error_statistics(distances[matched]),
         }
     return result
+
+
+def render_depth(
+    cloud: VoxelCloud,
+    T_MC_D: np.ndarray,
+    K_D: np.ndarray,
+    shape: tuple[int, int],
+    radius_m: float,
+    near_m: float = 0.05,
+) -> np.ndarray:
+    """Z-buffer camera-facing metric discs centered on surface voxel centroids.
+
+    Each disc has constant camera z and a fixed metric radius. This explicit
+    footprint approximates a point surface without inventing mesh connectivity.
+    It can bridge small holes and bias silhouettes, so report radius sensitivity.
+    K_D and shape describe the evaluation lattice, including its pixel origin.
+    No observed depth participates in rendering or visibility selection.
+    """
+    if not is_rigid(T_MC_D):
+        raise ValueError("rendering requires a rigid camera-to-map pose")
+    if any(not np.isfinite(x) or x <= 0 for x in (radius_m, near_m)):
+        raise ValueError("render radius and near plane must be finite and positive")
+    height, width = shape
+    if height <= 0 or width <= 0:
+        raise ValueError("render shape must be positive")
+    points = transform_points(cloud.points, np.linalg.inv(T_MC_D))
+    points = points[np.isfinite(points).all(axis=1) & (points[:, 2] >= near_m)]
+    pixels = project_points(points, K_D)
+    depth = np.full(height * width, np.inf)
+    # Small chunks bound temporary rasterization storage even near the camera.
+    for start in range(0, len(points), 256):
+        z = points[start : start + 256, 2]
+        xy = pixels[start : start + 256]
+        radii = radius_m * np.array([K_D[0, 0], K_D[1, 1]]) / z[:, None]
+        low = np.maximum(np.ceil(xy - radii), 0).astype(np.int64)
+        high = np.minimum(np.floor(xy + radii), [width - 1, height - 1]).astype(
+            np.int64
+        )
+        sizes = np.maximum(high - low + 1, 0)
+        counts = sizes.prod(axis=1)
+        index = np.repeat(np.arange(len(z)), counts)
+        if not len(index):
+            continue
+        offset = np.arange(len(index)) - np.repeat(np.cumsum(counts) - counts, counts)
+        u = low[index, 0] + offset % sizes[index, 0]
+        v = low[index, 1] + offset // sizes[index, 0]
+        distance2 = (
+            ((u - xy[index, 0]) / K_D[0, 0]) ** 2
+            + ((v - xy[index, 1]) / K_D[1, 1]) ** 2
+        ) * z[index] ** 2
+        inside = distance2 <= radius_m**2
+        np.minimum.at(depth, v[inside] * width + u[inside], z[index[inside]])
+    depth[~np.isfinite(depth)] = np.nan
+    return depth.reshape(shape)
+
+
+def heldout_metrics(
+    observed: np.ndarray,
+    predicted: np.ndarray,
+    population: np.ndarray,
+    tolerances_m: tuple[float, ...] = (0.02, 0.05, 0.10),
+) -> dict:
+    """Separate coverage from untrimmed error on an explicitly fixed population.
+
+    Positive residual means the visible map lies behind the measured surface.
+    Negative residual means map geometry occupies measured free space. Either
+    can reflect pose error, scene change or sensor error and neither is trimmed.
+    Missing predictions fail explained fractions but have no invented depth error.
+    """
+    if observed.shape != predicted.shape or population.shape != observed.shape:
+        raise ValueError("held-out arrays must share a pixel lattice")
+    if population.dtype.kind != "b":
+        raise ValueError("evaluation population must be a boolean mask")
+    if np.any(population & (~np.isfinite(observed) | (observed <= 0))):
+        raise ValueError("evaluation population requires valid observed depth")
+    if not tolerances_m or any(not np.isfinite(t) or t <= 0 for t in tolerances_m):
+        raise ValueError("depth tolerances must be finite and positive")
+    valid = population & np.isfinite(predicted) & (predicted > 0)
+    residual = predicted[valid] - observed[valid]
+    count, covered = int(population.sum()), int(valid.sum())
+    return {
+        "target_samples": count,
+        "predicted_samples": covered,
+        "missing_samples": count - covered,
+        "coverage": covered / count if count else None,
+        "absolute_depth_error_m": error_statistics(np.abs(residual)),
+        "signed_depth_error_m": error_statistics(residual),
+        "thresholds": {
+            str(t): {
+                "agree_samples": int((np.abs(residual) <= t).sum()),
+                "front_samples": int((residual < -t).sum()),
+                "behind_samples": int((residual > t).sum()),
+                "agreement_of_predicted": float((np.abs(residual) <= t).mean())
+                if covered
+                else None,
+                "explained_fraction_of_target": int((np.abs(residual) <= t).sum())
+                / count
+                if count
+                else None,
+            }
+            for t in tolerances_m
+        },
+    }
