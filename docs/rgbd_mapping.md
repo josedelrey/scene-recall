@@ -47,6 +47,10 @@ keyframes and 500,000 voxels per pose mode. Voxel-cap overflow raises before
 modifying the map. It does not silently discard geometry. Increase
 `--max-keyframes-per-submap` explicitly when a comparison requires a larger map.
 
+The optional [motion-budget keyframe experiment](keyframe_selection.md) compares
+estimated-motion selection with this temporal policy at identical observation
+budgets and frozen held-out views. It leaves the ordinary mapping CLI unchanged.
+
 Each tracking failure starts an independent segment. A `lost` frame is the
 first camera of the new segment and is eligible for integration. Segment
 boundaries must agree with status, ordered IDs and identity reset poses.

@@ -11,8 +11,28 @@ def verify(first: Path, second: Path) -> dict:
     a, b = [json.loads((path / "report.json").read_text()) for path in (first, second)]
     heldout = a.get("experiment") == "held_out_fusion_views"
     consensus = a.get("experiment") == "single_frame_training_free_space_consensus"
+    motion = a.get("experiment") == "motion_budget_keyframes"
     keys = (
         (
+            "experiment",
+            "format_version",
+            "rotation_radius_m",
+            "mapping_config",
+            "baseline_split",
+            "selection",
+            "selection_diagnostics",
+            "saved_report_sha256",
+            "saved_arrays_sha256",
+            "odometry",
+            "verified_canonical_input_sha256",
+            "environment",
+            "chunks",
+            "pooled",
+            "views",
+            "paired_blocks",
+        )
+        if motion
+        else (
             "experiment",
             "rule",
             "saved_report_sha256",
@@ -70,11 +90,11 @@ def verify(first: Path, second: Path) -> dict:
     if heldout:
         if a["odometry"] != b["odometry"]:
             raise ValueError("odometry identity differs")
-    elif not consensus:
+    elif not consensus and not motion:
         for key in ("backend", "report_sha256", "trajectory_sha256"):
             if a["odometry"][key] != b["odometry"][key]:
                 raise ValueError(f"odometry identity differs: {key}")
-    provenance = "inputs.json" if heldout or consensus else "keyframes.json"
+    provenance = "inputs.json" if heldout or consensus or motion else "keyframes.json"
     if (first / provenance).read_bytes() != (second / provenance).read_bytes():
         raise ValueError("input provenance differs")
     archives = sorted(path.name for path in first.glob("*.npz"))
