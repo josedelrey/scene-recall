@@ -14,26 +14,11 @@ from scene_recall.mapping.voxel import (
     VoxelMap,
     sample_observation,
 )
-from scene_recall.odometry.pipeline import TrajectoryFrame, is_rigid
-
-
-def validate_trajectory(frames: list[TrajectoryFrame]) -> None:
-    """Reject malformed gauges, resets and statuses before selecting any frames."""
-    for index, row in enumerate(frames):
-        if row.frame_index != index:
-            raise ValueError("trajectory indices must be zero-based and contiguous")
-        if not is_rigid(row.T_SC_D):
-            raise ValueError("trajectory poses must be rigid")
-        if not isinstance(row.segment_id, (int, np.integer)) or row.segment_id < 0:
-            raise ValueError("trajectory segment IDs must be nonnegative integers")
-        boundary = index == 0 or row.segment_id != frames[index - 1].segment_id
-        if index and row.segment_id < frames[index - 1].segment_id:
-            raise ValueError("trajectory segments must be ordered and never reused")
-        expected = "initialized" if index == 0 else "lost" if boundary else "tracked"
-        if row.status != expected:
-            raise ValueError("trajectory status must agree with segment boundaries")
-        if boundary and not np.allclose(row.T_SC_D, np.eye(4), rtol=0, atol=1e-6):
-            raise ValueError("each trajectory segment must start at identity")
+from scene_recall.odometry.pipeline import (
+    TrajectoryFrame,
+    is_rigid,
+    validate_trajectory,
+)
 
 
 def select_keyframes(frames: list[TrajectoryFrame], stride: int) -> list[int]:

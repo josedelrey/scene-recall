@@ -276,8 +276,10 @@ measurements, so a lower residual does not establish a better physical pose.
 
 `scripts/rgbd_odometry.py` runs the same backends, tracking, evaluation, and
 exports with either `--sens-path` or `--tum-path`. The ScanNet script remains
-a compatibility entry point. The shared implementation lives in
-`scene_recall.odometry.cli`. Backend settings are independent of the selected adapter.
+a compatibility entry point. The CLI parses options and calls
+`scene_recall.odometry.runner.run_odometry`. Versioned trajectory reading and
+writing live in `scene_recall.odometry.io`, and verified source replay lives in
+`scene_recall.datasets.replay`. Backend settings are independent of the selected adapter.
 
 The comparison runner accepts both source types and `--ranges all`. TUM
 provides independent motion-capture references and epoch timestamps. Time-based

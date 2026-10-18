@@ -18,20 +18,19 @@ from time import perf_counter
 import cv2
 import numpy as np
 
-from scene_recall.geometry.camera import project_points, transform_points
-from scene_recall.mapping.cli import (
-    _code_hash,
-    load_trajectory,
+from scene_recall.datasets.replay import (
     open_source,
-    sha256,
     validate_source,
     verified_observations,
 )
+from scene_recall.geometry.camera import project_points, transform_points
 from scene_recall.mapping.evaluation import heldout_metrics, render_depth
 from scene_recall.mapping.heldout import check_cohort, prediction_poses
 from scene_recall.mapping.pipeline import Keyframe, build_submap
 from scene_recall.mapping.voxel import MappingConfig, VoxelCloud, sample_observation
+from scene_recall.odometry.io import load_trajectory
 from scene_recall.odometry.pipeline import is_rigid
+from scene_recall.run_metadata import code_hash, sha256
 
 
 def free_space_consensus(cloud, training_views, K, tolerance_m):
@@ -350,7 +349,7 @@ def run(saved, runs, output):
             ],
             "verified_input_sha256": digest.hexdigest(),
             "script_sha256": sha256(Path(__file__)),
-            "package_code_sha256": _code_hash(),
+            "package_code_sha256": code_hash(),
             "environment": {
                 "python": platform.python_version(),
                 "numpy": np.__version__,

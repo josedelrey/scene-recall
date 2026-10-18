@@ -11,11 +11,20 @@ for scoring withheld fusion views.
 The implementation lives in `src/scene_recall/mapping/`:
 
 - `voxel.py`: filtering, native-depth sampling, RGB visibility and voxel fusion.
-- `pipeline.py`: keyframe selection, continuity validation and bounded submaps.
+- `pipeline.py`: keyframe selection and bounded submaps, using odometry's
+  shared trajectory validation.
 - `evaluation.py`: cross-view depth consistency and paired map distances.
 - `export.py`: scientific NPZ archives and colored PLY.
 - `../visualization/`: optional Rerun recording export from saved results.
-- `cli.py`: dataset/export pairing, provenance checks and atomic publication.
+- `runner.py`: dataset/export pairing, provenance checks and atomic publication
+  through `run_mapping`.
+- `cli.py`: argument parsing and runner invocation.
+
+Trajectory archives are read by `scene_recall.odometry.io`. Source reopening
+and canonical input verification live in `scene_recall.datasets.replay`.
+Shared code/file fingerprints and resource measurements live in
+`scene_recall.run_metadata`. Evaluation, visualization and experiments reuse
+these modules directly.
 
 The representation averages surface samples within metric voxel cells.
 It provides inspectable geometry and support without adding a TSDF, mesh,

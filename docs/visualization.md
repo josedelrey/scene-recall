@@ -144,8 +144,10 @@ uv run --locked --extra visualization rerun rrd verify \
 
 `scene_recall.visualization.rerun.SceneLogger` accepts canonical `Observation`,
 `Calibration`, accepted trajectory rows and saved map arrays. It owns no reader,
-tracker or mapper and logs to a caller-owned `RecordingStream`. The CLI handles
-experiment loading, validation and recording publication. Core mapping and
+tracker or mapper and logs to a caller-owned `RecordingStream`.
+`scene_recall.visualization.recording.export_recording` handles experiment
+loading, validation and recording publication. The CLI parses display and
+source options and invokes that exporter. Core mapping and
 odometry never import the Rerun SDK. A normal `uv sync --locked` keeps the core
 usable without the visualization extra.
 

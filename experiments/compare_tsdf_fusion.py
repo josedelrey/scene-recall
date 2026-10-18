@@ -12,12 +12,8 @@ from time import perf_counter
 import cv2
 import numpy as np
 
-from scene_recall.mapping.cli import (
-    _code_hash,
-    _peak_rss,
-    load_trajectory,
+from scene_recall.datasets.replay import (
     open_source,
-    sha256,
     validate_source,
     verified_observations,
 )
@@ -36,6 +32,8 @@ from scene_recall.mapping.mesh import render_mesh_depth, save_mesh
 from scene_recall.mapping.pipeline import Keyframe, build_submap
 from scene_recall.mapping.tsdf import TSDFConfig, TSDFView, fuse_tsdf
 from scene_recall.mapping.voxel import MappingConfig, VoxelCloud, sample_observation
+from scene_recall.odometry.io import load_trajectory
+from scene_recall.run_metadata import code_hash, peak_rss, sha256
 
 
 def training_view(index, pose, samples, stride):
@@ -374,7 +372,7 @@ def run(saved, runs, output, tsdf_config=None):
                 "python": platform.python_version(),
                 "numpy": np.__version__,
                 "opencv": cv2.__version__,
-                "code_sha256": _code_hash(),
+                "code_sha256": code_hash(),
                 "script_sha256": sha256(Path(__file__)),
             },
             "chunks": chunk_reports,
@@ -390,7 +388,7 @@ def run(saved, runs, output, tsdf_config=None):
                 ]
             },
             "timing": {"chunks": cost, "total_seconds": perf_counter() - started},
-            "peak_process_rss_mib_linux": _peak_rss(),
+            "peak_process_rss_mib_linux": peak_rss(),
         }
         (staging / "report.json").write_text(
             json.dumps(result, indent=2, allow_nan=False) + "\n"

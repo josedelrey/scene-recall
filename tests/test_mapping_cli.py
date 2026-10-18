@@ -10,9 +10,10 @@ import pytest
 from PIL import Image
 
 from scene_recall.datasets.tum import TUMConfig, TUMReader
-from scene_recall.mapping.cli import load_trajectory, main, run_mapping
+from scene_recall.mapping.cli import main
+from scene_recall.mapping.runner import run_mapping
 from scene_recall.mapping.voxel import MappingConfig
-from scene_recall.odometry.cli import save_run
+from scene_recall.odometry.io import load_trajectory, save_run
 from scene_recall.odometry.pipeline import TrajectoryFrame
 
 

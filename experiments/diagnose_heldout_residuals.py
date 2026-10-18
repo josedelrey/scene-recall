@@ -14,18 +14,15 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from scene_recall.datasets.replay import (
+    open_source,
+    validate_source,
+    verified_observations,
+)
 from scene_recall.geometry.camera import (
     backproject_depth,
     reject_depth_edges,
     transform_points,
-)
-from scene_recall.mapping.cli import (
-    _code_hash,
-    load_trajectory,
-    open_source,
-    sha256,
-    validate_source,
-    verified_observations,
 )
 from scene_recall.mapping.evaluation import heldout_metrics, render_depth
 from scene_recall.mapping.heldout import check_cohort
@@ -36,6 +33,8 @@ from scene_recall.mapping.voxel import (
     VoxelMap,
     sample_observation,
 )
+from scene_recall.odometry.io import load_trajectory
+from scene_recall.run_metadata import code_hash, sha256
 
 
 def point_cloud(points):
@@ -562,7 +561,7 @@ def run(saved, runs, output):
     provenance = {
         "saved_report_sha256": sha256(saved / "report.json"),
         "generator_script_sha256": sha256(Path(__file__)),
-        "package_code_sha256": _code_hash(),
+        "package_code_sha256": code_hash(),
         "verified_input_sha256": digest.hexdigest(),
         "train_indices": train,
         "target_indices": targets,

@@ -12,11 +12,11 @@ import pytest
 from test_mapping import plane, pose, row, samples
 from test_mapping_cli import make_run
 
-from scene_recall.mapping.cli import load_trajectory, run_mapping
 from scene_recall.mapping.pipeline import Keyframe, build_submap
+from scene_recall.mapping.runner import run_mapping
 from scene_recall.mapping.voxel import MappingConfig
-from scene_recall.odometry.cli import save_run
-from scene_recall.visualization.cli import export_recording
+from scene_recall.odometry.io import load_trajectory, save_run
+from scene_recall.visualization.recording import export_recording
 from scene_recall.visualization.rerun import (
     DisplayConfig,
     display_indices,
@@ -37,9 +37,9 @@ def test_core_imports_without_optional_sdk():
     code = """
 import sys
 sys.modules['rerun'] = None
-from scene_recall.mapping.cli import run_mapping
+from scene_recall.mapping.runner import run_mapping
 from scene_recall.odometry.cli import main
-from scene_recall.visualization.cli import export_recording
+from scene_recall.visualization.recording import export_recording
 """
     subprocess.run([sys.executable, "-c", code], check=True)
 

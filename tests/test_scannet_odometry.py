@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import scene_recall.odometry.runner as odometry_runner
 from scene_recall.data import Calibration, Observation
 
 script = runpy.run_path(Path(__file__).parents[1] / "scripts" / "scannet_odometry.py")
@@ -43,7 +44,7 @@ def test_cli_exports_reproducible_poses_and_evaluation(tmp_path, monkeypatch):
         def __iter__(self):
             return iter(observations)
 
-    monkeypatch.setitem(script["main"].__globals__, "ScanNetReader", Reader)
+    monkeypatch.setattr(odometry_runner, "ScanNetReader", Reader)
     outputs = []
     for name in ("first", "repeat"):
         output = tmp_path / name
@@ -142,7 +143,7 @@ def test_cli_failed_transitions_export_segments_without_fabricated_motion(
             return iter(Observation(index, rgb, depth) for index in range(3))
 
     output = tmp_path / "run"
-    monkeypatch.setitem(script["main"].__globals__, "ScanNetReader", Reader)
+    monkeypatch.setattr(odometry_runner, "ScanNetReader", Reader)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -213,10 +214,8 @@ def test_cli_selects_geometric_backends_and_exports_stage_diagnostics(
             result._sparse = StubSparse(PairEstimate(truth, initial_T_C1C0=np.eye(4)))
             return result
 
-        monkeypatch.setitem(
-            script["main"].__globals__, "HybridRGBDBackend", hybrid_factory
-        )
-    monkeypatch.setitem(script["main"].__globals__, "ScanNetReader", Reader)
+        monkeypatch.setattr(odometry_runner, "HybridRGBDBackend", hybrid_factory)
+    monkeypatch.setattr(odometry_runner, "ScanNetReader", Reader)
     output = tmp_path / "run"
     monkeypatch.setattr(
         sys,

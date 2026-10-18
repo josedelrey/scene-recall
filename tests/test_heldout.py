@@ -13,7 +13,6 @@ from test_mapping import plane, pose, row, samples
 from test_mapping_cli import make_run
 
 from scene_recall.datasets.tum import TUMConfig, TUMReader
-from scene_recall.mapping.cli import load_trajectory
 from scene_recall.mapping.evaluation import heldout_metrics, render_depth
 from scene_recall.mapping.heldout import (
     check_cohort,
@@ -25,7 +24,7 @@ from scene_recall.mapping.heldout import (
 )
 from scene_recall.mapping.pipeline import Keyframe, build_submap
 from scene_recall.mapping.voxel import MappingConfig, VoxelMap
-from scene_recall.odometry.cli import save_run
+from scene_recall.odometry.io import load_trajectory, save_run
 
 
 def cloud(points):

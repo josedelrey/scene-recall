@@ -14,12 +14,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
-from scene_recall.mapping.cli import (
-    _code_hash,
-    _peak_rss,
-    load_trajectory,
+from scene_recall.datasets.replay import (
     open_source,
-    sha256,
     validate_source,
     verified_observations,
 )
@@ -27,7 +23,9 @@ from scene_recall.mapping.evaluation import heldout_metrics, render_depth
 from scene_recall.mapping.export import save_cloud
 from scene_recall.mapping.pipeline import Keyframe, build_submap, select_keyframes
 from scene_recall.mapping.voxel import MappingConfig, sample_observation
+from scene_recall.odometry.io import load_trajectory
 from scene_recall.odometry.pipeline import is_rigid
+from scene_recall.run_metadata import code_hash, peak_rss, sha256
 
 
 def heldout_split(frames, config: MappingConfig, offset: int) -> dict:
@@ -514,13 +512,13 @@ def run_heldout(
                 "python": platform.python_version(),
                 "numpy": np.__version__,
                 "opencv": cv2.__version__,
-                "code_sha256": _code_hash(),
+                "code_sha256": code_hash(),
             },
             "submaps": submap_reports,
             "summaries": summaries,
             "views": view_rows,
             "timing": {"total_seconds": perf_counter() - started},
-            "peak_process_rss_mib_linux": _peak_rss(),
+            "peak_process_rss_mib_linux": peak_rss(),
         }
         csv_rows = []
         for radius, summary in summaries.items():
