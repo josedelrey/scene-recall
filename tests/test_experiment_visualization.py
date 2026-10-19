@@ -157,6 +157,7 @@ class ExperimentCapture(Capture):
 def test_experiment_comparisons_reuse_colocated_maps(
     experiments, monkeypatch, name, representations
 ):
+    rr = pytest.importorskip("rerun")
     root, _, odometry, baseline, outputs = experiments
     capture = ExperimentCapture()
 
@@ -186,6 +187,21 @@ def test_experiment_comparisons_reuse_colocated_maps(
         assert not view.properties
     assert any(v.name == "Final reconstruction and trajectories" for v in views)
     assert any(v.name == "Signed error values (m)" for v in views)
+    # Every representation's segment is metrically rooted outside the implicit
+    # global tree, including geometry not selected in the active comparison tab.
+    segment_roots = {
+        path
+        for path, _, _, _ in capture.logs
+        if path.rsplit("/", 2)[-2:] == ["segments", "0"]
+    }
+    assert segment_roots
+    for path in segment_roots:
+        for transform, _, static in capture.values(path, rr.Transform3D):
+            assert static
+            assert transform.parent_frame.as_arrow_array().to_pylist() == [
+                f"scene_recall/{path}"
+            ]
+            assert transform.scale.as_arrow_array().to_pylist() == [[1, 1, 1]]
 
 
 def test_adapter_keeps_target_pose_modes_and_saved_scores(experiments, monkeypatch):

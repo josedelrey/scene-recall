@@ -96,7 +96,8 @@ reference populations remain labeled, with scientific comparisons withheld.
 Each comparison stays within one submap, segment and backend gauge.
 
 Regenerate a recording to get this workspace. Existing `.rrd` files retain
-their embedded blueprint.
+their embedded blueprint and transforms. Recordings exported with zero-scale
+segment roots must be regenerated to remove their transformation warnings.
 
 Scrub the **frame** timeline, whose indices are the original source-frame
 indices, or play it to move through the capture. `sensor_time` retains supplied
@@ -308,6 +309,13 @@ Shared-camera validation checked orbiting followed by VO-only, GT-only and
 overlay visibility in Rerun 0.38.1. Native rendering also checked the point-cloud,
 mesh and TSDF point-control color overrides. A regenerated Desk TSDF experiment
 passed `rrd verify`, with all 47 scientific input files hash-checked unchanged.
+Frame-root validation additionally regenerated Desk mapping with RGB-D and
+Desk/RPY TSDF recordings, preserving hashes of all 116 scientific input files.
+Native Rerun reported no warnings or view errors across both backends,
+representations, calibrated cameras and disconnected RPY segments. An ancestor
+view could not place geometry from independent segment gauges into one scene.
+Decoded old/new Desk recordings also matched all 55,887 spatial component/time
+keys, excluding only the corrected segment-root scale and parent-frame fields.
 
 Output requires a fresh `.rrd` path. Export stages the recording beside the
 output and publishes it atomically after validation and flushing. A failed
@@ -332,8 +340,12 @@ usable without the visualization extra.
 
 Entity paths separate `segments/<id>/estimated`, `segments/<id>/reference` and
 `segments/<id>/submaps/<id>/{estimated,reference}`. Camera models and metric
-transforms are explicit. Segment roots use Rerun's disconnected-transform
-sentinel so a new root view cannot silently overlay unrelated gauges. This boundary can accept future ROS2 observations
+transforms are explicit. Each segment root has a unit-scale identity transform
+into a unique named parent frame, `scene_recall/<segment entity path>`. That
+parent has no connection to the global entity-path tree. Descendants retain
+their implicit frames and saved metric transforms, including `T_SM`. This keeps
+segment, backend and representation gauges disconnected without singular
+transforms. This boundary can accept future ROS2 observations
 without introducing ROS2 dependencies into the scientific code. Future semantic
 entities can be added under the appropriate segment or submap, preserving their
 IDs and coordinate ownership. No ROS2 transport or semantic inference is

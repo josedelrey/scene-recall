@@ -108,11 +108,16 @@ class SceneLogger:
             self.recording.set_time("sensor_time", duration=row.timestamp)
 
     def segment_space(self, segment_id):
-        # Rerun's zero-scale sentinel disconnects this gauge from its parent.
-        # Merely omitting a transform would imply an identity relationship.
+        self.independent_space(f"segments/{segment_id}")
+
+    def independent_space(self, root):
+        """Root a metric gauge in its own named frame, outside the global tree."""
+        # The child keeps its implicit tf#/<root> frame and descendant transforms.
+        # A named parent has no implicit ancestors. Identity preserves metric scale
+        # without inventing a placement relative to other segment/backend gauges.
         self.recording.log(
-            f"segments/{segment_id}",
-            self.rr.Transform3D(scale=0.0),
+            root,
+            self.rr.Transform3D(parent_frame=f"scene_recall/{root}", scale=1.0),
             self.rr.ViewCoordinates.RDF,
             static=True,
         )

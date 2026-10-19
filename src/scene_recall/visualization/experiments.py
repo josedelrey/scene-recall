@@ -559,12 +559,7 @@ def export_experiment(
         for spec in specs:
             root, submap = spec.root, spec.report
             segment_root = root.rsplit("/submaps/", 1)[0]
-            recording.log(
-                segment_root,
-                rr.Transform3D(scale=0.0),
-                rr.ViewCoordinates.RDF,
-                static=True,
-            )
+            logger.independent_space(segment_root)
             logger.transform(root, np.asarray(submap["T_SM"]), static=True)
             arrays = _geometry(spec)
             geometry_root = root + "/" + spec.mode + "/map"

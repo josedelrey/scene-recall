@@ -194,11 +194,46 @@ def test_camera_geometry_depth_units_missing_references_and_time():
     np.testing.assert_array_equal(observation.depth, original)
     disconnected = capture.values("segments/0", rr.Transform3D)[0][0]
     np.testing.assert_array_equal(
-        disconnected.scale.as_arrow_array().to_pylist(), [[0, 0, 0]]
+        disconnected.scale.as_arrow_array().to_pylist(), [[1, 1, 1]]
     )
+    assert disconnected.parent_frame.as_arrow_array().to_pylist() == [
+        "scene_recall/segments/0"
+    ]
     no_timestamp = replace(row(0), timestamp=None)
     logger.set_frame(no_timestamp, 12)
     assert capture.time == {"frame": {"sequence": 12}}
+
+
+def test_independent_gauges_have_distinct_named_roots_and_unit_scale():
+    rr = pytest.importorskip("rerun")
+    from scene_recall.visualization.rerun import SceneLogger
+
+    _, calibration, _ = plane()
+    capture = Capture()
+    logger = SceneLogger(capture, calibration)
+    roots = [
+        "segments/0",
+        "segments/1",
+        "experiments/baseline/sparse/segments/0",
+        "experiments/baseline/hybrid/segments/0",
+        "experiments/mesh/sparse/segments/0",
+        "experiments/tsdf/sparse/segments/0",
+    ]
+    parents = set()
+    for root in roots:
+        logger.independent_space(root)
+        transform, _, static = capture.values(root, rr.Transform3D)[0]
+        parent = transform.parent_frame.as_arrow_array().to_pylist()[0]
+        assert not parent.startswith("tf#")
+        assert parent.endswith(root)
+        assert parent not in parents
+        parents.add(parent)
+        assert static
+        assert transform.child_frame is None  # Keep the entity's implicit frame.
+        assert transform.translation is None
+        assert transform.mat3x3 is None
+        assert transform.quaternion is None
+        assert transform.scale.as_arrow_array().to_pylist() == [[1, 1, 1]]
 
 
 def _rrd(executable, command, path, *extra):
