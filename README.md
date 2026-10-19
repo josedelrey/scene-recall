@@ -60,6 +60,7 @@ and mapping preserves those boundaries. Reference poses are used for diagnostics
 | TUM input, calibration and timestamp association | [TUM support](docs/tum.md) |
 | Backends, failure policy, exports and trajectory metrics | [RGB-D odometry](docs/odometry.md) |
 | Persistent tracks, shared landmarks and covisibility | [Multiview measurements](docs/multiview_tracks.md) |
+| Bounded experimental pose-only refinement and map evaluation | [Pose-only multiview experiment](docs/pose_only_multiview.md) |
 | Matched comparisons, analysis and repeat verification | [Odometry comparison workflow](docs/odometry_backend_comparison.md) |
 | Voxel fusion, local submaps and scientific exports | [RGB-D mapping](docs/rgbd_mapping.md) |
 | Native offline visualization and recordings | [Rerun workflow](docs/visualization.md) |

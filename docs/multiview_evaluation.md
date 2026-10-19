@@ -9,6 +9,10 @@ The results justify a subsequent small-window pose-only experiment followed by
 local RGB-D Bundle Adjustment. They do not establish that optimization will
 improve trajectories or held-out map geometry. No optimizer is implemented here.
 
+The subsequent [pose-only experiment](pose_only_multiview.md) and
+[its evaluation](pose_only_evaluation.md) now test that recommendation while
+preserving this track-only milestone's protocol and results.
+
 ## Protocol and retained runs
 
 Default Sparse VO supplies fixed estimated poses. Multiview settings are fixed

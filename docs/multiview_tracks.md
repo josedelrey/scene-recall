@@ -193,3 +193,5 @@ calibrated noise model or trajectory optimization.
 
 See [the measured investigation](multiview_evaluation.md) for the evaluated
 sequences, controls and decision about the next optimization milestone.
+The subsequent [pose-only experiment](pose_only_multiview.md) consumes
+training-only tracks through a separate opt-in workflow.
