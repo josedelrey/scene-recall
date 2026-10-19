@@ -15,6 +15,15 @@ from scene_recall.odometry.pipeline import TrajectoryFrame
 
 ESTIMATED = [255, 190, 70]
 REFERENCE = [70, 210, 190]
+COMPARISON_GUIDE = (
+    "Compare VO / GT uses one 3D camera for both final reconstructions. "
+    "In the Blueprint panel, expand this view and use the eye icons on its "
+    "estimated and reference branches to show VO, GT or both without switching views. "
+    "VO is amber and GT is teal. These view-local colors preserve recorded RGB and support. "
+    "Both maps use the saved submap frame and fixed reference alignment. "
+    "GT means reference-pose fusion of sensor depth, not independent surface truth. "
+    "Unpaired keyframes remain labeled and have no scientific map-distance comparison."
+)
 
 
 def require_rerun():
@@ -431,6 +440,33 @@ class SceneLogger:
             self.scalars(f"diagnostics/maps/{mode}", report[mode])
 
 
+def comparison_view(root, geometries, *, paired, name="Compare VO / GT (amber / teal)"):
+    """Compare geometry already expressed in the same saved submap frame.
+
+    Only the view's colors change. Geometry, transforms and attributes continue
+    to come from the recording. Native visibility controls retain this view's eye.
+    """
+    import rerun.blueprint as rrb
+
+    rr = require_rerun()
+    overrides = {}
+    for mode, color in (("estimated", ESTIMATED), ("reference", REFERENCE)):
+        path, kind = geometries[mode]
+        overrides[path] = (
+            # Mesh vertex colors require one entry per vertex. A uniform material
+            # with an empty color override avoids copying a full color array.
+            rr.Mesh3D.from_fields(vertex_colors=[], albedo_factor=color)
+            if kind == "mesh"
+            else rr.Points3D.from_fields(colors=color)
+        ).visualizer()
+    return rrb.Spatial3DView(
+        name=name + ("" if paired else " / unpaired keyframes"),
+        origin=root,
+        contents=list(overrides),
+        overrides=overrides,
+    )
+
+
 def blueprint(
     segment_ids,
     submaps,
@@ -480,7 +516,16 @@ def blueprint(
         )
     for submap in submaps:
         root = f"segments/{submap['segment_id']}/submaps/{submap['submap_id']}"
-        modes = []
+        modes = [
+            comparison_view(
+                root,
+                {
+                    mode: (f"{root}/{mode}/map/rgb", "cloud")
+                    for mode in ("estimated", "reference")
+                },
+                paired=submap["comparison_status"] == "paired",
+            )
+        ]
         for coloring in ("rgb", "support"):
             modes.append(
                 rrb.Horizontal(
@@ -618,6 +663,7 @@ def blueprint(
         if show_diagnostics
         else rrb.Tabs(*tabs),
         rrb.TimePanel(timeline="frame", play_state="paused"),
+        rrb.BlueprintPanel(state="expanded"),
         auto_layout=False,
         auto_views=False,
     )

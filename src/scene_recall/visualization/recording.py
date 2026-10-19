@@ -20,6 +20,7 @@ from scene_recall.geometry.transforms import is_rigid
 from scene_recall.odometry.io import load_trajectory
 from scene_recall.run_metadata import sha256
 from scene_recall.visualization.rerun import (
+    COMPARISON_GUIDE,
     DisplayConfig,
     SceneLogger,
     blueprint,
@@ -242,6 +243,7 @@ def export_recording(
             "Submap tabs compare estimated and reference-pose maps in the recorded local gauge. "
             "Reference alignment is diagnostic and never corrects estimates. Missing or invalid "
             "reference poses break the reference path.\n\n"
+            f"{COMPARISON_GUIDE}\n\n"
             "RGB and native z-depth use separate calibrated optical cameras. Depth is in meters. "
             "Images are shown only at recorded samples, so sparse images are never projected "
             "using a different frame's pose. Select an image to inspect its sample time.\n\n"

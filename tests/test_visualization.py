@@ -17,10 +17,78 @@ from scene_recall.mapping.runner import run_mapping
 from scene_recall.mapping.voxel import MappingConfig
 from scene_recall.visualization.recording import export_recording
 from scene_recall.visualization.rerun import (
+    ESTIMATED,
+    REFERENCE,
     DisplayConfig,
+    blueprint,
+    comparison_view,
     display_indices,
     require_rerun,
 )
+
+
+def blueprint_views(layout):
+    """Collect native views without depending on container nesting."""
+    import rerun.blueprint as rrb
+
+    if isinstance(layout, rrb.Blueprint):
+        yield from blueprint_views(layout.root_container)
+    elif isinstance(layout, rrb.Container):
+        for child in layout.contents:
+            yield from blueprint_views(child)
+    else:
+        yield layout
+
+
+@pytest.mark.parametrize("kind", ["cloud", "surface", "mesh"])
+def test_comparison_uses_one_view_with_only_local_color_overrides(kind):
+    rr = pytest.importorskip("rerun")
+    root = "segments/2/submaps/3"
+    geometries = {
+        mode: (f"{root}/{mode}/map", kind) for mode in ("estimated", "reference")
+    }
+    view = comparison_view(root, geometries, paired=True)
+    assert view.origin == root
+    assert set(view.contents) == {path for path, _ in geometries.values()}
+    # No separate cameras, tracking eye, transform overrides or duplicated geometry.
+    assert not view.properties
+    for mode, color in (("estimated", ESTIMATED), ("reference", REFERENCE)):
+        visualizer = view.visualizer_overrides[geometries[mode][0]]
+        assert visualizer.visualizer_type == (
+            "Mesh3D" if kind == "mesh" else "Points3D"
+        )
+        expected = rr.components.ColorBatch([color]).as_arrow_array()
+        if kind == "mesh":
+            # A mesh needs a uniform material and an empty per-vertex override.
+            assert len(visualizer.overrides) == 2
+            assert visualizer.overrides[0].as_arrow_array().to_pylist() == []
+            assert visualizer.overrides[1].as_arrow_array() == expected
+        else:
+            assert len(visualizer.overrides) == 1
+            assert visualizer.overrides[0].as_arrow_array() == expected
+
+
+def test_submap_comparison_preserves_existing_views_and_unpaired_warning():
+    pytest.importorskip("rerun")
+    submaps = [
+        {"segment_id": 2, "submap_id": 3, "comparison_status": "paired"},
+        {
+            "segment_id": 9,
+            "submap_id": 4,
+            "comparison_status": "unavailable_unpaired_references",
+        },
+    ]
+    workspace = blueprint([2, 9], submaps, show_images=False)
+    views = list(blueprint_views(workspace))
+    comparisons = [v for v in views if v.name.startswith("Compare VO / GT")]
+    assert len(comparisons) == 2
+    assert "unpaired" not in comparisons[0].name
+    assert "unpaired keyframes" in comparisons[1].name
+    for view in comparisons:
+        assert all(p.startswith(view.origin + "/") for p in view.contents)
+        assert not any("camera" in p or "trajectory" in p for p in view.contents)
+    assert sum(v.name == "Estimated poses" for v in views) == 4
+    assert workspace.blueprint_panel.state == "expanded"
 
 
 def test_optional_sdk_failure_is_actionable(monkeypatch):
@@ -289,3 +357,19 @@ def test_submap_transforms_match_saved_gauges():
     np.testing.assert_allclose(
         reference.translation.as_arrow_array().to_pylist(), [[0.4, 0, 0]], atol=1e-6
     )
+    # Both clouds are already in M, despite nonidentity segment/world gauges.
+    # Rendering them together must neither realign them nor apply T_SM twice.
+    point = np.array([0, 0, 1, 1])
+    for mode, transforms in (
+        ("estimated", [np.linalg.inv(submap.T_SM) @ r.T_SC_D for r in frames]),
+        ("reference", [submap.T_MW_reference @ r.reference_pose for r in frames]),
+    ):
+        logged = capture.values(f"{root}/{mode}/map/rgb", rr.Points3D)[0][0]
+        positions = np.array(logged.positions.as_arrow_array().to_pylist())
+        expected = np.array([(T @ point)[:3] for T in transforms])
+        np.testing.assert_allclose(
+            positions[np.argsort(positions[:, 0])],
+            expected[np.argsort(expected[:, 0])],
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(positions, clouds[mode]["points"], atol=1e-6)

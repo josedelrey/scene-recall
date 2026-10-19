@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from helpers.mapping import plane, pose, row
 from helpers.runs import continuous_run
-from test_visualization import Capture, _rrd
+from test_visualization import Capture, _rrd, blueprint_views
 
 from scene_recall.mapping.heldout import run_heldout
 from scene_recall.mapping.voxel import MappingConfig
@@ -143,6 +143,49 @@ def test_evaluated_lattice_error_sign_masks_and_observed_surface():
 class ExperimentCapture(Capture):
     def send_blueprint(self, blueprint):
         self.blueprint = blueprint
+
+
+@pytest.mark.parametrize(
+    ("name", "representations"),
+    [
+        ("heldout", {"baseline"}),
+        ("tsdf", {"baseline", "mesh", "tsdf"}),
+        ("support", {"baseline", "consensus"}),
+        ("motion", {"motion", "temporal"}),
+    ],
+)
+def test_experiment_comparisons_reuse_colocated_maps(
+    experiments, monkeypatch, name, representations
+):
+    root, _, odometry, baseline, outputs = experiments
+    capture = ExperimentCapture()
+
+    @contextmanager
+    def sink(output):
+        yield capture
+
+    monkeypatch.setattr("scene_recall.visualization.experiments.recording_stream", sink)
+    export_experiment(
+        root / "comparison.rrd",
+        experiment_run=outputs[name],
+        baseline_run=baseline if name != "heldout" else None,
+        odometry_runs=[odometry],
+        display=DisplayConfig(20),
+    )
+    views = list(blueprint_views(capture.blueprint))
+    comparisons = [v for v in views if "/ VO amber / GT teal" in v.name]
+    assert {v.name.split(" / ")[0] for v in comparisons} == representations
+    logged_paths = {path for path, _, _, _ in capture.logs}
+    for view in comparisons:
+        assert set(view.contents) <= logged_paths
+        assert len(view.contents) == 2
+        assert {p.split(view.origin + "/")[1].split("/")[0] for p in view.contents} == {
+            "estimated",
+            "reference",
+        }
+        assert not view.properties
+    assert any(v.name == "Final reconstruction and trajectories" for v in views)
+    assert any(v.name == "Signed error values (m)" for v in views)
 
 
 def test_adapter_keeps_target_pose_modes_and_saved_scores(experiments, monkeypatch):

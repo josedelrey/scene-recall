@@ -22,7 +22,13 @@ from scene_recall.visualization.recording import (
     _validate_submaps,
     recording_stream,
 )
-from scene_recall.visualization.rerun import SceneLogger, blueprint, require_rerun
+from scene_recall.visualization.rerun import (
+    COMPARISON_GUIDE,
+    SceneLogger,
+    blueprint,
+    comparison_view,
+    require_rerun,
+)
 
 HELDOUT = "held_out_fusion_views"
 TSDF = "projective_tsdf_fusion"
@@ -48,6 +54,11 @@ class Reconstruction:
             f"experiments/{self.label}/{self.backend}/segments/"
             f"{self.report['segment_id']}/submaps/{self.report['submap_id']}"
         )
+
+    @property
+    def geometry(self):
+        suffix = {"cloud": "/rgb", "mesh": "/mesh", "surface": ""}[self.kind]
+        return f"{self.root}/{self.mode}/map{suffix}"
 
 
 def _arrays(path):
@@ -353,18 +364,13 @@ def _view_archive(run, baseline_run, report, chunk, radius, rows, shape):
 def _evaluation_tabs(spec, evaluations):
     import rerun.blueprint as rrb
 
-    geometry = spec.root + "/" + spec.mode + "/map"
     tabs = []
     for root, name, masks in evaluations:
         scene = rrb.Spatial3DView(
             name="Reconstruction and observed residuals",
             origin=spec.root,
             contents=[
-                f"+ {geometry}/mesh"
-                if spec.kind == "mesh"
-                else f"+ {geometry}/rgb"
-                if spec.kind == "cloud"
-                else f"+ {geometry}",
+                f"+ {spec.geometry}",
                 f"+ {root}/camera/residual_points",
                 f"+ {root}/camera/lattice",
             ],
@@ -759,19 +765,16 @@ def export_experiment(
         import rerun.blueprint as rrb
 
         grouped = {}
+        comparison_specs = {}
         for spec in sorted(specs, key=lambda s: (s.kind != "mesh", s.label)):
             root = spec.root
-            geometry = root + "/" + spec.mode + "/map"
+            comparison_specs.setdefault(root, {})[spec.mode] = spec
             # Multiple pose modes share a reconstruction tab, with no gauge mixing.
             context = rrb.Spatial3DView(
                 name="Final reconstruction and trajectories",
                 origin=root,
                 contents=[
-                    f"+ {geometry}/mesh"
-                    if spec.kind == "mesh"
-                    else f"+ {geometry}/rgb"
-                    if spec.kind == "cloud"
-                    else f"+ {geometry}",
+                    f"+ {spec.geometry}",
                     f"+ {root}/estimated/camera/**",
                     f"+ {root}/reference/camera/**",
                     f"+ {root}/estimated/trajectory",
@@ -806,10 +809,37 @@ def export_experiment(
                     name=spec.label,
                 )
             )
+        comparisons = {}
+        for root, modes in comparison_specs.items():
+            # Only colocated pose modes share a view. In controlled experiments,
+            # some backends have no separately logged reference reconstruction.
+            if set(modes) != {"estimated", "reference"}:
+                continue
+            spec = modes["estimated"]
+            geometries = {mode: (s.geometry, s.kind) for mode, s in modes.items()}
+            comparisons.setdefault(spec.report["submap_id"], {}).setdefault(
+                spec.backend, []
+            ).append(
+                comparison_view(
+                    root,
+                    geometries,
+                    paired=spec.report["comparison_status"] == "paired",
+                    name=f"{spec.label} / VO amber / GT teal",
+                )
+            )
         tabs.extend(
             rrb.Tabs(
                 *[
                     rrb.Tabs(
+                        *(
+                            [
+                                rrb.Tabs(
+                                    *comparisons[chunk][backend], name="Compare VO / GT"
+                                )
+                            ]
+                            if backend in comparisons.get(chunk, {})
+                            else []
+                        ),
                         *[
                             rrb.Tabs(*variants, name=mode + " map")
                             for mode, variants in modes.items()
@@ -833,6 +863,7 @@ def export_experiment(
                 "# SceneRecall fusion evaluation\n\nScrub the frame timeline. Each representation and target-pose mode has a separate scene. "
                 "Maps are final static reconstructions. Segment gauges are disconnected. Amber trajectories use estimates, teal use fixed training reference alignment. "
                 "Reference poses never correct estimates. Reference maps are sensor-consistency diagnostics, not independent surface truth.\n\n"
+                f"{COMPARISON_GUIDE}\n\n"
                 "Observed and predicted images contain saved metric z-depth on the native [::stride, ::stride] lattice. "
                 "Predictions retain their saved nearest-z visibility, including geometry behind measured surfaces. "
                 "Residual = predicted minus observed. Red is in front, blue behind, gray missing prediction, black invalid target. "

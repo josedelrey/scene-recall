@@ -54,10 +54,11 @@ uv run --locked --extra visualization python scripts/rgbd_recording.py \
   accepted trajectory, a moving calibrated camera, RGB and metric z-depth.
   Estimated paths are amber. Reference paths and frustums are teal, aligned once
   at the first valid reference in that segment with fixed metric scale.
-- **Submap tabs** compare estimated and reference-pose reconstructions side by
-  side in the submap frame. Each uses its saved first-pose diagnostic alignment.
-  Switch between RGB and frame-support coloring. Reference submaps have
-  separate alignments and are never treated as a globally corrected map.
+- **Submap tabs** open a **Compare VO / GT** view with a shared 3D camera.
+  The existing side-by-side RGB and frame-support views remain available.
+  Both maps use the submap frame and its saved first-pose diagnostic alignment.
+  Reference submaps have separate alignments and are never treated as a globally
+  corrected map.
   Unpaired reference populations are labeled in the view title, and scientific
   map-distance comparisons remain withheld.
 - **Diagnostics** show tracking measurements, position and rotation differences
@@ -66,6 +67,36 @@ uv run --locked --extra visualization python scripts/rgbd_recording.py \
   keyframe and describe the complete map. Raw saved reports are available under
   Guide and provenance. A reference-pose reconstruction is a diagnostic, not independent
   surface truth.
+
+### Compare geometry from one viewpoint
+
+Open a submap's **Compare VO / GT** view and orbit, pan or zoom to the desired
+viewpoint. In the left **Blueprint** panel, expand that view and use the eye
+icons beside its `estimated` and `reference` branches. The icons appear when
+hovering over a branch:
+
+- Show `estimated` only for VO geometry in amber.
+- Show `reference` only for GT geometry in teal.
+- Show both for a colored overlay of geometric misalignments.
+
+Keep the same view open while toggling visibility to retain its 3D camera.
+These are native, per-view Rerun controls. Independent RGB, support and
+evaluation views keep their own cameras. The comparison includes only final
+geometry, avoiding occlusion from projected depth or moving cameras. Its color
+overrides leave the recorded RGB, support, point attributes and mesh connectivity
+unchanged. Opaque overlapping surfaces can occlude each other, so toggle each
+map individually when inspecting close misalignments.
+
+Here **GT** means reconstruction from reference poses and measured depth, which
+is a diagnostic rather than independent surface truth. Coordinates are already
+in the saved submap frame: estimated fusion uses `inv(T_SM) @ T_SC_D`, and
+reference fusion uses `T_MW_reference_diagnostic @ T_WC_D`. The comparison
+applies no additional alignment, scale adjustment or pose correction. Unpaired
+reference populations remain labeled, with scientific comparisons withheld.
+Each comparison stays within one submap, segment and backend gauge.
+
+Regenerate a recording to get this workspace. Existing `.rrd` files retain
+their embedded blueprint.
 
 Scrub the **frame** timeline, whose indices are the original source-frame
 indices, or play it to move through the capture. `sensor_time` retains supplied
@@ -189,6 +220,12 @@ to standard mapping export, while experiment replay requires saved odometry.
 ### Native workspace and scientific conventions
 
 Navigate through submap, backend, map pose source and representation tabs.
+Within each backend, **Compare VO / GT** offers one shared-camera view per
+representation with both map modes logged in the same submap frame, including
+meshes and TSDF point controls. Controlled experiments log the shared reference
+map only under the first backend, so other backends retain their existing
+reconstruction and evaluation views without a comparison tab. Motion-keyframe
+runs retain a comparison for each backend and strategy's own reference map.
 Reconstruction shows the final colored map or mesh alongside accepted and
 aligned reference trajectories and moving cameras. Mesh connectivity and vertex
 colors are preserved without decimation. Surface-voxel RGB and support entities
@@ -267,6 +304,10 @@ Scientific input files were hash-checked before and after export. The generated
 recordings passed native `rerun rrd verify`. Automated fixtures additionally cover
 pose-mode separation, sampled intrinsics, residual signs, missing geometry,
 unavailable references, malformed archives and atomic publication failure.
+Shared-camera validation checked orbiting followed by VO-only, GT-only and
+overlay visibility in Rerun 0.38.1. Native rendering also checked the point-cloud,
+mesh and TSDF point-control color overrides. A regenerated Desk TSDF experiment
+passed `rrd verify`, with all 47 scientific input files hash-checked unchanged.
 
 Output requires a fresh `.rrd` path. Export stages the recording beside the
 output and publishes it atomically after validation and flushing. A failed
@@ -306,4 +347,8 @@ and evaluation workflows remain unchanged.
 
 See the upstream [Rerun quick start](https://rerun.io/docs/getting-started) and
 [transform conventions](https://rerun.io/docs/concepts/logging-and-ingestion/transforms)
-for native viewer and logging concepts.
+for native viewer and logging concepts. Rerun's
+[viewer navigation](https://rerun.io/docs/getting-started/configure-the-viewer/navigating-the-viewer)
+describes entity visibility controls, and
+[view customization](https://rerun.io/docs/concepts/visualization/customize-views)
+explains per-view overrides.
