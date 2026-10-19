@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from itertools import groupby
 from pathlib import Path
 
@@ -39,7 +40,7 @@ def _calibration(metadata):
     )
 
 
-def _cloud(path, submap, mode):
+def _cloud(path, submap, mode, *, require_metadata=True, pose_source=True):
     with np.load(path, allow_pickle=False) as archive:
         arrays = {
             name: archive[name]
@@ -52,10 +53,18 @@ def _cloud(path, submap, mode):
                 "position_std_m",
             )
         }
-        metadata = json.loads(str(archive["metadata_json"]))
-    if any(metadata.get(key) != value for key, value in submap.items()):
+        metadata = (
+            json.loads(str(archive["metadata_json"]))
+            if "metadata_json" in archive
+            else None
+        )
+    if require_metadata and metadata is None:
+        raise ValueError(f"map metadata is missing: {path.name}")
+    if metadata is not None and any(
+        metadata.get(key) != value for key, value in submap.items()
+    ):
         raise ValueError(f"map metadata differs from mapping report: {path.name}")
-    if metadata.get("pose_source") != mode:
+    if pose_source and metadata is not None and metadata.get("pose_source") != mode:
         raise ValueError(f"map pose source differs: {path.name}")
     count = len(arrays["points"])
     if (
@@ -69,6 +78,15 @@ def _cloud(path, submap, mode):
         raise ValueError(f"invalid map array shape or voxel count: {path.name}")
     if any(not np.isfinite(array).all() for array in arrays.values()):
         raise ValueError(f"nonfinite map values: {path.name}")
+    if arrays["colors"].dtype != np.uint8 or not np.issubdtype(
+        arrays["keys"].dtype, np.integer
+    ):
+        raise ValueError(f"invalid map colors or voxel keys: {path.name}")
+    if any(
+        (arrays[name] < 0).any()
+        for name in ("frame_support", "color_support", "position_std_m")
+    ):
+        raise ValueError(f"negative map support or scatter: {path.name}")
     return arrays
 
 
@@ -105,6 +123,28 @@ def _validate_submaps(report, frames):
             )
         ):
             raise ValueError("submap gauge or frame range differs from trajectory")
+
+
+@contextmanager
+def recording_stream(output):
+    """Stage one self-contained recording and publish only after a clean close."""
+    rr = require_rerun()
+    if output.suffix != ".rrd":
+        raise ValueError("output must have the .rrd extension")
+    if output.exists():
+        raise ValueError("output already exists, choose a new .rrd path")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".recording-", dir=output.parent) as folder:
+        staged = Path(folder) / "scene.rrd"
+        recording = rr.RecordingStream("scene_recall")
+        try:
+            recording.save(staged)
+            recording.send_recording_name(output.stem)
+            yield recording
+            recording.flush()
+        finally:
+            recording.disconnect()
+        os.link(staged, output)
 
 
 def export_recording(
@@ -184,122 +224,108 @@ def export_recording(
     segments = sorted({row.segment_id for row in frames})
     source_start = (odometry or mapping)["source"]["start"]
     calibration = _calibration((odometry or mapping)["calibration"])
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=".recording-", dir=output.parent
-    ) as temporary:
-        staged = Path(temporary) / "scene.rrd"
-        # No default/global recording, server, browser, or viewer process is created.
-        recording = rr.RecordingStream("scene_recall")
-        try:
-            recording.save(staged)
-            recording.send_blueprint(
-                blueprint(
-                    segments,
-                    submaps,
-                    mapping["consistency"]["pair_keyframe_offsets"] if mapping else (),
-                    show_images=image_mode != "none",
-                )
+    with recording_stream(output) as recording:
+        recording.send_blueprint(
+            blueprint(
+                segments,
+                submaps,
+                mapping["consistency"]["pair_keyframe_offsets"] if mapping else (),
+                show_images=image_mode != "none",
             )
-            recording.send_recording_name(output.stem)
-            logger = SceneLogger(recording, calibration, display)
-            guide = (
-                "# SceneRecall\n\n"
-                "Use the frame timeline to scrub synchronized cameras, images and diagnostics. "
-                "Segment tabs contain independent coordinate frames. No transform connects them.\n\n"
-                "Maps and complete paths are final, static results, not incremental replay. "
-                "Submap tabs compare estimated and reference-pose maps in the recorded local gauge. "
-                "Reference alignment is diagnostic and never corrects estimates. Missing or invalid "
-                "reference poses break the reference path.\n\n"
-                "RGB and native z-depth use separate calibrated optical cameras. Depth is in meters. "
-                "Images are shown only at recorded samples, so sparse images are never projected "
-                "using a different frame's pose. Select an image to inspect its sample time.\n\n"
-                "Frame support colors run blue (1) through cyan to yellow (the full cloud maximum), "
-                "on a log2 scale per cloud. Select a point to inspect frame/color support and positional "
-                "scatter. Display limits never alter scientific arrays or scores.\n\n"
-                f"Rerun SDK: {rr.__version__}\n\n"
-                f"Display: {display}\n\nImage mode: {image_mode}\n\n"
-                "NPZ, PLY and JSON remain the scientific outputs. The RRD embeds its data and blueprint "
-                "and can be opened without source files or network access.\n\n"
-            )
-            recording.log(
-                "recording/guide",
-                rr.TextDocument(guide, media_type="text/markdown"),
-                static=True,
-            )
-            for name, report in (("mapping", mapping), ("odometry", odometry)):
-                if report is not None:
-                    recording.log(
-                        f"recording/{name}_report",
-                        rr.TextDocument(
-                            json.dumps(report, indent=2), media_type="application/json"
-                        ),
-                        static=True,
-                    )
-            for _, group in groupby(frames, key=lambda row: row.segment_id):
-                logger.segment(list(group), source_start)
-            for row, metadata in zip(
-                frames, odometry["frames"] if odometry else [], strict=True
-            ):
-                logger.set_frame(row, source_start)
-                logger.scalars("diagnostics/tracking", metadata.get("diagnostics", {}))
+        )
+        logger = SceneLogger(recording, calibration, display)
+        guide = (
+            "# SceneRecall\n\n"
+            "Use the frame timeline to scrub synchronized cameras, images and diagnostics. "
+            "Segment tabs contain independent coordinate frames. No transform connects them.\n\n"
+            "Maps and complete paths are final, static results, not incremental replay. "
+            "Submap tabs compare estimated and reference-pose maps in the recorded local gauge. "
+            "Reference alignment is diagnostic and never corrects estimates. Missing or invalid "
+            "reference poses break the reference path.\n\n"
+            "RGB and native z-depth use separate calibrated optical cameras. Depth is in meters. "
+            "Images are shown only at recorded samples, so sparse images are never projected "
+            "using a different frame's pose. Select an image to inspect its sample time.\n\n"
+            "Frame support colors run blue (1) through cyan to yellow (the full cloud maximum), "
+            "on a log2 scale per cloud. Select a point to inspect frame/color support and positional "
+            "scatter. Display limits never alter scientific arrays or scores.\n\n"
+            f"Rerun SDK: {rr.__version__}\n\n"
+            f"Display: {display}\n\nImage mode: {image_mode}\n\n"
+            "NPZ, PLY and JSON remain the scientific outputs. The RRD embeds its data and blueprint "
+            "and can be opened without source files or network access.\n\n"
+        )
+        recording.log(
+            "recording/guide",
+            rr.TextDocument(guide, media_type="text/markdown"),
+            static=True,
+        )
+        for name, report in (("mapping", mapping), ("odometry", odometry)):
+            if report is not None:
                 recording.log(
-                    "diagnostics/events",
-                    rr.TextLog(json.dumps(metadata, sort_keys=True)),
+                    f"recording/{name}_report",
+                    rr.TextDocument(
+                        json.dumps(report, indent=2), media_type="application/json"
+                    ),
+                    static=True,
                 )
-            for submap in submaps:
-                clouds = {
-                    mode: _cloud(
-                        mapping_run / f"submap_{submap['submap_id']:03d}_{mode}.npz",
-                        submap,
-                        mode,
-                    )
-                    for mode in ("estimated", "reference")
-                }
-                rows = frames[
-                    submap["keyframe_indices"][0] : submap["keyframe_indices"][-1] + 1
-                ]
-                logger.submap(submap, clouds, rows, source_start)
-            if mapping:
-                for pair in mapping["consistency"]["pairs"]:
-                    recording.reset_time()
-                    recording.set_time(
-                        "frame",
-                        sequence=source_start
-                        + max(pair["source_frame"], pair["target_frame"]),
-                    )
-                    direction = (
-                        "forward"
-                        if pair["source_frame"] < pair["target_frame"]
-                        else "reverse"
-                    )
-                    root = f"diagnostics/consistency/offset_{pair['keyframe_offset']}/{direction}"
-                    for mode in ("estimated", "reference"):
-                        logger.scalars(f"{root}/{mode}", pair[mode])
-            if image_mode != "none":
-                reader, _ = open_source(odometry, source_path)
-                with reader:
-                    validate_source(reader, odometry)
-                    iterator = verified_observations(
-                        reader, odometry, frames, hashlib.sha256(), {}
-                    )
-                    for observation in iterator:
-                        row = frames[observation.frame_index]
-                        logger.set_frame(row, source_start)
-                        if (
-                            image_mode == "all"
-                            or observation.frame_index in selected_images
-                        ):
-                            logger.observation(observation, row)
-                        else:
-                            root = f"segments/{row.segment_id}/estimated/camera"
-                            for sensor in ("rgb", "depth"):
-                                recording.log(
-                                    root + f"/{sensor}/image", rr.Clear(recursive=True)
-                                )
-            recording.flush()
-        finally:
-            recording.disconnect()
-        # Hard-link publication is atomic and refuses a concurrent overwrite.
-        os.link(staged, output)
+        for _, group in groupby(frames, key=lambda row: row.segment_id):
+            logger.segment(list(group), source_start)
+        for row, metadata in zip(
+            frames, odometry["frames"] if odometry else [], strict=True
+        ):
+            logger.set_frame(row, source_start)
+            logger.scalars("diagnostics/tracking", metadata.get("diagnostics", {}))
+            recording.log(
+                "diagnostics/events",
+                rr.TextLog(json.dumps(metadata, sort_keys=True)),
+            )
+        for submap in submaps:
+            clouds = {
+                mode: _cloud(
+                    mapping_run / f"submap_{submap['submap_id']:03d}_{mode}.npz",
+                    submap,
+                    mode,
+                )
+                for mode in ("estimated", "reference")
+            }
+            rows = frames[
+                submap["keyframe_indices"][0] : submap["keyframe_indices"][-1] + 1
+            ]
+            logger.submap(submap, clouds, rows, source_start)
+        if mapping:
+            for pair in mapping["consistency"]["pairs"]:
+                recording.reset_time()
+                recording.set_time(
+                    "frame",
+                    sequence=source_start
+                    + max(pair["source_frame"], pair["target_frame"]),
+                )
+                direction = (
+                    "forward"
+                    if pair["source_frame"] < pair["target_frame"]
+                    else "reverse"
+                )
+                root = f"diagnostics/consistency/offset_{pair['keyframe_offset']}/{direction}"
+                for mode in ("estimated", "reference"):
+                    logger.scalars(f"{root}/{mode}", pair[mode])
+        if image_mode != "none":
+            reader, _ = open_source(odometry, source_path)
+            with reader:
+                validate_source(reader, odometry)
+                iterator = verified_observations(
+                    reader, odometry, frames, hashlib.sha256(), {}
+                )
+                for observation in iterator:
+                    row = frames[observation.frame_index]
+                    logger.set_frame(row, source_start)
+                    if (
+                        image_mode == "all"
+                        or observation.frame_index in selected_images
+                    ):
+                        logger.observation(observation, row)
+                    else:
+                        root = f"segments/{row.segment_id}/estimated/camera"
+                        for sensor in ("rgb", "depth"):
+                            recording.log(
+                                root + f"/{sensor}/image", rr.Clear(recursive=True)
+                            )
     return output

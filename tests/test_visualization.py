@@ -39,6 +39,7 @@ sys.modules['rerun'] = None
 from scene_recall.mapping.runner import run_mapping
 from scene_recall.odometry.cli import main
 from scene_recall.visualization.recording import export_recording
+from scene_recall.visualization.experiments import export_experiment
 """
     subprocess.run([sys.executable, "-c", code], check=True)
 

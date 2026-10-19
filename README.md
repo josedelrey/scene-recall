@@ -43,7 +43,8 @@ uv run --locked --extra visualization rerun outputs/visualization/desk_sparse_20
 The recording embeds RGB-D keyframes, maps, poses, diagnostics and its viewer
 layout. Opening it needs no dataset or network. NPZ, PLY and JSON remain the
 scientific data formats. See [Rerun visualization](docs/visualization.md) for
-image-free export, relocated runs and display controls.
+image-free export, relocated runs, colored TSDF meshes and synchronized held-out
+depth/error inspection across fusion experiments.
 
 Sparse is the default backend. Tracking losses create independent segments,
 and mapping preserves those boundaries. Reference poses are used for diagnostics only.
@@ -79,5 +80,6 @@ uv run --locked ruff format --check .
 Recording integration tests run when the visualization extra is installed:
 
 ```bash
-uv run --locked --extra visualization pytest -q tests/test_visualization.py
+uv run --locked --extra visualization pytest -q \
+  tests/test_visualization.py tests/test_experiment_visualization.py
 ```

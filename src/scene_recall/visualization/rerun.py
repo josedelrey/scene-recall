@@ -134,9 +134,11 @@ class SceneLogger:
             static=False,
         )
 
-    def observation(self, observation: Observation, row: TrajectoryFrame):
+    def observation(
+        self, observation: Observation, row: TrajectoryFrame, *, camera_root=None
+    ):
         """Embed lossless RGB and native metric depth in their calibrated frames."""
-        root = f"segments/{row.segment_id}/estimated/camera"
+        root = camera_root or f"segments/{row.segment_id}/estimated/camera"
         self.camera_model(root + "/rgb", rgb=True)
         self.recording.log(root + "/rgb/image", self.rr.Image(observation.rgb))
         # NaN is canonical missing depth. Rerun uses zero for invalid samples.
@@ -225,12 +227,14 @@ class SceneLogger:
                         self.rr.Scalars(float("nan")),
                     )
 
-    def scalars(self, root, values):
+    def scalars(self, root, values, *, missing_nan=False):
         """Expose finite report measurements while preserving raw JSON separately."""
         for key, value in values.items():
             path = f"{root}/{key}"
             if isinstance(value, dict):
-                self.scalars(path, value)
+                self.scalars(path, value, missing_nan=missing_nan)
+            elif value is None and missing_nan:
+                self.recording.log(path, self.rr.Scalars(float("nan")))
             elif (
                 isinstance(value, (int, float))
                 and not isinstance(value, bool)
@@ -284,6 +288,107 @@ class SceneLogger:
             static=True,
         )
 
+    def mesh(self, root, arrays):
+        """Preserve the exported connectivity and vertex colors without decimation."""
+        self.recording.log(
+            root,
+            self.rr.Mesh3D(
+                vertex_positions=arrays["vertices"],
+                triangle_indices=arrays["triangles"],
+                vertex_colors=arrays["colors"],
+            ),
+            static=True,
+        )
+
+    def surface(self, root, arrays):
+        """Display TSDF point controls using their actual near-view support."""
+        support = arrays["view_support"]
+        # Zero near-view support is meaningful and remains visible by default.
+        indices = display_indices(
+            np.ones(len(support)), DisplayConfig(self.display.max_points)
+        )
+        self.recording.log(
+            root,
+            self.rr.Points3D(
+                arrays["points"][indices], colors=arrays["colors"][indices], radii=0.004
+            ),
+            self.rr.AnyValues(
+                view_support=support[indices],
+                color_support=arrays["color_support"][indices],
+                signed_residual_std_m=arrays["signed_residual_std_m"][indices],
+            ),
+            static=True,
+        )
+
+    def evaluation(self, root, pose, observed, predicted, masks, pixel_stride):
+        """Log saved z-buffer predictions and signed errors on observed surfaces.
+
+        No visibility or scoring is recomputed. Missing predictions remain gray
+        and invalid targets black. Only display colors saturate at 150 mm.
+        """
+        rr, recording = self.rr, self.recording
+        self.transform(root + "/camera", pose)
+        K = self.calibration.K_D.copy()
+        K[:2] /= pixel_stride
+        recording.log(
+            root + "/camera/lattice",
+            rr.Pinhole(
+                image_from_camera=K,
+                resolution=[observed.shape[1], observed.shape[0]],
+                camera_xyz=rr.ViewCoordinates.RDF,
+                image_plane_distance=0.12,
+            ),
+        )
+        for name, depth in (("observed", observed), ("predicted", predicted)):
+            recording.log(
+                root + "/camera/lattice/" + name,
+                rr.DepthImage(
+                    np.nan_to_num(depth, nan=0), meter=1.0, depth_range=[0, 4]
+                ),
+            )
+        valid = np.isfinite(observed) & (observed > 0)
+        covered = valid & np.isfinite(predicted) & (predicted > 0)
+        residual = np.where(covered, predicted - observed, np.nan)
+        colors = np.zeros((*observed.shape, 3), dtype=np.uint8)
+        colors[valid & ~covered] = [110, 110, 110]
+        level = np.clip(np.abs(residual[covered]) / 0.15, 0, 1)
+        white = np.full((len(level), 3), 245.0)
+        ends = np.where((residual[covered] < 0)[:, None], [220, 45, 45], [45, 90, 220])
+        colors[covered] = (white * (1 - level[:, None]) + ends * level[:, None]).astype(
+            np.uint8
+        )
+        recording.log(root + "/residual", rr.Image(colors))
+        recording.log(
+            root + "/signed_error_m",
+            rr.Tensor(residual, dim_names=["v", "u"], value_range=[-0.15, 0.15]),
+        )
+        recording.log(root + "/valid_target", rr.Image(valid.astype(np.uint8) * 255))
+        recording.log(root + "/coverage", rr.Image(covered.astype(np.uint8) * 255))
+        for name, mask in masks.items():
+            recording.log(
+                root + "/masks/" + name, rr.Image(mask.astype(np.uint8) * 255)
+            )
+        v, u = np.nonzero(valid)
+        indices = np.arange(len(v))
+        if len(indices) > self.display.max_points:
+            indices = np.linspace(0, len(v) - 1, self.display.max_points, dtype=np.intp)
+        v, u = v[indices], u[indices]
+        rays = np.column_stack((u, v, np.ones(len(u)))) @ np.linalg.inv(K).T
+        points = rays * observed[v, u, None]
+        recording.log(
+            root + "/camera/residual_points",
+            rr.Points3D(points, colors=colors[v, u], radii=0.006),
+            rr.AnyValues(
+                native_u=u * pixel_stride,
+                native_v=v * pixel_stride,
+                observed_m=observed[v, u],
+                predicted_m=predicted[v, u],
+                signed_error_m=residual[v, u],
+                prediction_valid=covered[v, u],
+                **{name: mask[v, u] for name, mask in masks.items()},
+            ),
+        )
+
     def submap(self, report, clouds, rows, source_start):
         self.segment_space(report["segment_id"])
         root = f"segments/{report['segment_id']}/submaps/{report['submap_id']}"
@@ -326,11 +431,19 @@ class SceneLogger:
             self.scalars(f"diagnostics/maps/{mode}", report[mode])
 
 
-def blueprint(segment_ids, submaps, pair_offsets=(), *, show_images=True):
+def blueprint(
+    segment_ids,
+    submaps,
+    pair_offsets=(),
+    *,
+    show_images=True,
+    extra_tabs=(),
+    show_diagnostics=True,
+):
     """Embed a curated native workspace, with no shared view of unrelated gauges."""
     import rerun.blueprint as rrb
 
-    tabs = []
+    tabs = list(extra_tabs)
     for segment in segment_ids:
         root = f"segments/{segment}"
         scene = rrb.Spatial3DView(
@@ -408,6 +521,9 @@ def blueprint(segment_ids, submaps, pair_offsets=(), *, show_images=True):
             ),
             rrb.TextDocumentView(
                 name="Odometry report", origin="recording/odometry_report"
+            ),
+            rrb.TextDocumentView(
+                name="Experiment report", origin="recording/experiment_report"
             ),
             name="Guide and provenance",
         )
@@ -498,7 +614,9 @@ def blueprint(segment_ids, submaps, pair_offsets=(), *, show_images=True):
         active_tab=0 if segment_ids else 3,
     )
     return rrb.Blueprint(
-        rrb.Vertical(rrb.Tabs(*tabs), diagnostics, row_shares=[4, 1]),
+        rrb.Vertical(rrb.Tabs(*tabs), diagnostics, row_shares=[4, 1])
+        if show_diagnostics
+        else rrb.Tabs(*tabs),
         rrb.TimePanel(timeline="frame", play_state="paused"),
         auto_layout=False,
         auto_views=False,

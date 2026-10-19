@@ -30,12 +30,15 @@ package cache, add `--offline` to `uv run` to prevent package-index access.
 Rerun's viewer has its own analytics preference, which can be disabled with
 `uv run --locked --extra visualization rerun analytics disable`.
 
-The mapping input must be a standard format-1 surface-voxel run from
+The `--mapping-run` input is a standard format-1 surface-voxel run from
 `scripts/rgbd_mapping.py`, including existing runs created before this workflow.
 The exporter finds the original format-2 odometry run through its saved report.
 It reads saved maps and accepted poses, without executing tracking, fusion or
 scoring. Existing HTML files in old ignored experiment folders are unused.
 New mapping runs produce only scientific exports until a recording is requested.
+
+Use `--experiment-run` for the held-out and volumetric workflows below. All
+workflows use the same scene logger, offline recording sink and native viewer.
 
 To inspect an odometry experiment before reconstructing a map:
 
@@ -130,6 +133,141 @@ whose images are omitted. Map archive metadata, shape and voxel counts are
 checked against the mapping report. These checks detect input disagreement,
 without claiming to authenticate map values against an independent checksum.
 
+## Held-out and volumetric experiments
+
+The experiment adapter reads these existing output schemas:
+
+| Saved run | Visualization |
+| --- | --- |
+| `scripts/rgbd_heldout.py` | Surface-voxel maps, every saved radius, evaluated depths, common masks and scores |
+| `experiments/compare_tsdf_fusion.py` | Colored connected triangle meshes, TSDF point controls and linked baseline maps |
+| `experiments/support_aware_fusion.py` | Consensus-filtered maps and their linked baselines, with the original paired populations |
+| `experiments/compare_keyframe_selection.py` | Temporal and motion-selected maps, each strategy's reference map, predictions and diagnostics |
+
+Supply the exact odometry cohort with `--odometry-runs`, including every backend
+listed in the report. Directory relocation is allowed when report and trajectory
+hashes still match. The standard held-out report already contains calibration
+and map context:
+
+```bash
+uv run --locked --extra visualization python scripts/rgbd_recording.py \
+  --experiment-run outputs/heldout/desk \
+  --odometry-runs outputs/odometry/desk_sparse outputs/odometry/desk_hybrid \
+  --output outputs/visualization/desk_heldout.rrd
+```
+
+Comparison experiments also require the original held-out `--baseline-run`.
+Its report and retained input archives must match the experiment's saved hashes.
+It supplies baseline geometry, calibration and, for consensus runs, observed
+depth and baseline predictions that were not duplicated in the proposal archive.
+For example, after the [volumetric experiment](volumetric_mapping.md#reproduction):
+
+```bash
+uv run --locked --extra visualization python scripts/rgbd_recording.py \
+  --experiment-run outputs/heldout/tsdf/connected/desk \
+  --baseline-run outputs/heldout/final/desk \
+  --odometry-runs \
+    outputs/odometry/tum_cross_sequence/rgbd_dataset_freiburg1_desk_0_all_sparse \
+    outputs/odometry/tum_cross_sequence/rgbd_dataset_freiburg1_desk_0_all_hybrid \
+  --output outputs/visualization/desk_volumetric.rrd
+```
+
+Substitute a support-consensus or motion-keyframe comparison directory for
+`--experiment-run` to inspect those experiments. Earlier TSDF point-only runs
+are also supported, with their original common population and no invented mesh.
+
+Experiment export defaults to `--images none`. It embeds saved evaluated depth,
+predictions and diagnostics without opening the original dataset. Add
+`--images evaluated` for native RGB-D at evaluated observations, `keyframes`
+for training observations or `all` for the complete source selection. Raw RGB-D
+is shown in Reconstruction at the **estimated** pose, with separate calibrated
+RGB and depth cameras. The evaluation views use their named target-pose mode.
+Source verification and relocation follow the same rules as standard recordings.
+`--submap` limits reconstruction and evaluation payloads. `--maps-only` belongs
+to standard mapping export, while experiment replay requires saved odometry.
+
+### Native workspace and scientific conventions
+
+Navigate through submap, backend, map pose source and representation tabs.
+Reconstruction shows the final colored map or mesh alongside accepted and
+aligned reference trajectories and moving cameras. Mesh connectivity and vertex
+colors are preserved without decimation. Surface-voxel RGB and support entities
+remain selectable in the entity tree. TSDF points retain their own near-surface
+`view_support`, including zero-support points. This diagnostic differs from
+voxel `frame_support`. `--min-support` filters surface-voxel displays only.
+`--max-points` caps each point cloud and each spatial residual sample. Meshes,
+depth images, masks and numerical scores retain their complete populations.
+
+Each target-pose/radius tab combines a 3D reconstruction with observed-surface
+residual points, synchronized observed/predicted metric depth, signed-error
+images and tensors, validity/coverage/common masks, saved per-view scores and
+temporal plots. A separate observed residual surface view avoids mesh occlusion
+when inspecting spatial errors. Error plots use meters, with coverage and
+explained fractions in a separate plot tab. Select a spatial point for its native
+pixel coordinates, measured/predicted depth, unsaturated error and saved masks.
+
+Use the **frame** timeline and scrub to evaluated observations. Evaluation
+availability logs retain withheld statuses. Unlogged and unavailable frames
+clear evaluation payloads, preventing old residuals from appearing at another
+camera pose. Final maps remain visible throughout. Raw reports, including pooled
+scores, paired blocks, training selection and resource diagnostics, are embedded
+under Guide and provenance. No tracking, fusion, rendering or scoring algorithm
+runs during export.
+
+The evaluation camera uses `K_D` with its first two rows divided by the saved
+pixel stride. Pixel `(u, v)` corresponds exactly to native pixel
+`(stride*u, stride*v)`, with no half-pixel shift. Observed depth is the saved
+filtered target population, which can differ from raw sensor depth. Predictions
+retain the saved renderer's nearest-z visibility and missing pixels. Residual
+points lie on the **observed** surface, transformed through the selected target
+pose into that reconstruction's submap frame.
+
+Residual is **predicted minus observed**. Red places predicted geometry in front
+of the measurement, blue behind, gray marks a missing prediction and black an
+invalid target. Colors saturate at 150 mm. Tensors, point attributes and saved
+scores keep unsaturated values. Missing predictions have no fabricated error.
+All-target coverage and explained fractions remain separate from conditional
+accuracy and common-pixel populations. Native depth color ranges are fixed to
+0–4 m for comparison, while depth values outside that display range are retained.
+
+Estimated targets use `inv(T_SM) @ T_SC_D`. Reference targets use the saved
+training alignment `T_MW_reference_diagnostic @ T_WC_D`. Backend and segment
+gauges stay disconnected, and each reference submap retains its own alignment.
+Reference-target and estimated-target consistency are labeled separately.
+Missing or invalid references never trigger a fallback to estimates.
+
+The connected TSDF experiment's `common_all_versions` mask excludes TSDF point
+controls from the primary baseline/mesh intersection. Its report calls that
+population `common_all_modes`. The adapter preserves both original names and
+the saved mask. The point controls can still be missing predictions within that
+population. Consensus reports retain baseline-common and paired-baseline-common
+populations, and motion reports retain their cross-strategy intersection. None
+of these masks is reconstructed from a display-filtered cloud.
+
+### Limits and verification
+
+Export validates archive shapes, frame identities, map counts, triangle indices,
+calibration, transforms, baseline hashes, cohort provenance and common-mask
+visibility conventions. Experiment geometry itself has no independent content
+checksum in the original reports. Structural checks cannot authenticate every
+saved coordinate or numerical score. Unknown schemas fail explicitly.
+
+Recordings can be large because every prediction, mask and diagnostic is
+embedded. Export loads one evaluation archive at a time, and viewer memory grows
+with retained content. Allow the native viewer to finish loading before judging
+an empty view. Use submap selection and point caps for long runs. Dense TSDF
+interior slicing is not implemented. Analysis-only residual probes and synthetic
+pose-bias reports do not retain the same reconstruction/trajectory replay schema
+and are not accepted as experiment inputs.
+
+Representative validation on 2026-10-19 covered full Desk held-out playback at
+three radii with evaluated RGB-D, Desk TSDF meshes and point controls, Desk
+consensus and motion runs, and RPY TSDF with unavailable reference comparisons.
+Scientific input files were hash-checked before and after export. The generated
+recordings passed native `rerun rrd verify`. Automated fixtures additionally cover
+pose-mode separation, sampled intrinsics, residual signs, missing geometry,
+unavailable references, malformed archives and atomic publication failure.
+
 Output requires a fresh `.rrd` path. Export stages the recording beside the
 output and publishes it atomically after validation and flushing. A failed
 export discards temporary files. Existing scientific files are never rewritten.
@@ -160,10 +298,11 @@ entities can be added under the appropriate segment or submap, preserving their
 IDs and coordinate ownership. No ROS2 transport or semantic inference is
 implemented here.
 
-The initial exporter supports standard mapping and odometry runs. Specialized
-held-out and TSDF experiment report schemas require dedicated adapters rather
-than guessing coordinate frames from archive filenames. Their NPZ/PLY/JSON
-outputs and evaluation workflows remain unchanged.
+`scene_recall.visualization.experiments` adapts the explicit scientific
+experiment schemas into this same logger and recording sink. It owns input
+verification and representation/pose descriptors, keeping dataset access and
+report conventions outside the scene logger. Scientific NPZ/PLY/JSON outputs
+and evaluation workflows remain unchanged.
 
 See the upstream [Rerun quick start](https://rerun.io/docs/getting-started) and
 [transform conventions](https://rerun.io/docs/concepts/logging-and-ingestion/transforms)

@@ -5,6 +5,11 @@ colored meshes. The original surface-voxel mapper, temporal keyframes and
 Sparse default remain unchanged. The new path is useful research infrastructure,
 with substantial gains under some poses and important failures under others.
 
+Inspect saved connected colored meshes, TSDF point controls and linked
+surface-voxel baselines through the shared [Rerun experiment workflow](visualization.md#held-out-and-volumetric-experiments).
+It embeds synchronized held-out depth, residuals, masks and original scores in
+the same native workspace without recomputing the reconstruction or evaluation.
+
 ## Why change the representation
 
 Earlier controls found substantial held-out residuals even with reference

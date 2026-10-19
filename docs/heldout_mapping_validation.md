@@ -117,6 +117,12 @@ Outputs include:
   common masks and candidate/evaluated frame indices.
 - First/middle/last target diagnostic PNGs, selected by frame order.
 
+For native temporal inspection of every evaluated observation, export this run
+through the [Rerun experiment workflow](visualization.md#held-out-and-volumetric-experiments).
+It combines observed/predicted depth, saved population masks, signed residuals,
+3D error samples and original scores with the reconstruction. Saved evaluated
+depth works without the original dataset. Native RGB-D embedding is optional.
+
 The example below illustrates diagnostic output from a Desk run. Red places map
 geometry in front of measured depth, blue behind, gray marks missing predictions,
 and black invalid target depth. Green marks common pixels. Display saturation
