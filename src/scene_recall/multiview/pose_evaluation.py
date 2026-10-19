@@ -82,6 +82,15 @@ def evaluate_pose_maps(
     experiment_report = json.loads(
         (experiment / "report.json").read_text(encoding="utf-8")
     )
+    for filename, key in (
+        ("training_measurements.npz", "training_measurements_sha256"),
+        ("native_measurements.npz", "native_measurements_sha256"),
+    ):
+        if (
+            key in experiment_report
+            and sha256(experiment / filename) != experiment_report[key]
+        ):
+            raise ValueError("optimization measurement archive changed")
     baseline_run = Path(experiment_report["baseline_run"])
     if (
         sha256(baseline_run / "report.json")
@@ -92,6 +101,12 @@ def evaluate_pose_maps(
         raise ValueError("baseline changed after optimization")
     for name in variants:
         identity = experiment_report["variants"][name]
+        if (
+            "factor_archive_sha256" in identity
+            and sha256(experiment / f"{name}_factors.npz")
+            != identity["factor_archive_sha256"]
+        ):
+            raise ValueError("optimization factor archive changed")
         if (
             sha256(experiment / name / "trajectory.npz")
             != identity["trajectory_sha256"]

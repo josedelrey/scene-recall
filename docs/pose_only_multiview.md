@@ -6,6 +6,10 @@ There are no free landmark parameters, loop closures, cross-segment constraints
 or global trajectory solve. See [the measured evaluation](pose_only_evaluation.md)
 for outcomes and the decision about subsequent Bundle Adjustment.
 
+The subsequent [RGB-D BA prerequisite audit](rgbd_ba_prerequisites.md) provides
+reproducible exposure, conditioning and final-window objective checks. It stops
+before joint fitting because the temporal measurement model remains unresolved.
+
 ## Formulation
 
 For camera-to-segment poses `T_i = T_SR_i`, choose one depth-supported anchor
@@ -184,3 +188,7 @@ target depth, every predicted depth image and per-view/pooled metrics. They
 refuse changed trajectories and verify the complete canonical input stream.
 All publication uses fresh staged directories. Existing outputs are untouched.
 There is no automatic promotion of a refined trajectory to the default pipeline.
+
+The later [temporal fixed-landmark control](temporal_fixed_landmarks.md) uses a
+direct RGB/native-depth objective intended for a controlled future joint-BA
+comparison. It remains a separate offline backend and preserves these variants.

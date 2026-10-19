@@ -1,5 +1,9 @@
 # Pose-only multiview investigation
 
+The subsequent [RGB-D BA prerequisite audit](rgbd_ba_prerequisites.md) measures
+exposure-time sensitivity and overlap effects and defers joint fitting pending
+a defensible temporal measurement policy. The results below remain unchanged.
+
 Measured on 2026-10-19 on native Windows with Python 3.12.13, NumPy 2.5.3 and
 OpenCV 5.0.0. The implementation and uncertainty assumptions are described in
 [the pose-only guide](pose_only_multiview.md).
@@ -293,3 +297,7 @@ evidence supports a small controlled joint-BA comparison after these prerequisit
 
 Sparse remains the default. No full joint landmark BA, loop closure, global pose
 graph, relocalization or SLAM frontend was introduced in this milestone.
+
+See the subsequent [temporal control evaluation](temporal_fixed_landmarks_evaluation.md)
+for a matched direct-observation objective, explicit exposure-time assumptions
+and conservative overlap handling. Those results do not replace this baseline.
