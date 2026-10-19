@@ -7,11 +7,10 @@ import cv2
 import numpy as np
 
 from scene_recall.data import Calibration, Observation
+from scene_recall.features import RGBDFeatures as _Features
+from scene_recall.features import extract_rgbd_features
 from scene_recall.geometry.camera import (
-    backproject_rgb_pixels,
     project_points,
-    register_depth_to_rgb,
-    reject_depth_edges,
     transform_points,
 )
 from scene_recall.geometry.transforms import is_rigid
@@ -235,13 +234,6 @@ def estimate_sparse_pose(
     return PairEstimate(pose, initial_T_C1C0=initial, diagnostics=diagnostics)
 
 
-@dataclass(frozen=True, eq=False)
-class _Features:
-    pixels: np.ndarray
-    descriptors: np.ndarray | None
-    points_R: np.ndarray
-
-
 class SparseRGBDBackend:
     """SIFT backend with a one-observation feature cache and no reference-pose use.
 
@@ -262,32 +254,9 @@ class SparseRGBDBackend:
             previous, previous_calibration, features = self._cached
             if previous is observation and previous_calibration is calibration:
                 return features
-        keypoints, descriptors = self._sift.detectAndCompute(
-            cv2.cvtColor(observation.rgb, cv2.COLOR_RGB2GRAY), None
+        return extract_rgbd_features(
+            observation, calibration, self._sift, self.config.depth_edge_threshold_m
         )
-        pixels = np.array(
-            [keypoint.pt for keypoint in keypoints], dtype=np.float64
-        ).reshape(-1, 2)
-        depth = observation.depth
-        if self.config.depth_edge_threshold_m is not None:
-            depth = reject_depth_edges(depth, self.config.depth_edge_threshold_m)
-        if np.array_equal(calibration.T_RD, np.eye(4)):
-            points = backproject_rgb_pixels(
-                pixels, depth, calibration.K_R, calibration.K_D
-            )
-        else:
-            registered = register_depth_to_rgb(
-                observation.depth,
-                calibration.K_D,
-                calibration.K_R,
-                calibration.T_RD,
-                calibration.rgb_shape,
-                valid_mask=np.isfinite(depth),
-            )
-            points = backproject_rgb_pixels(
-                pixels, registered, calibration.K_R, calibration.K_R
-            )
-        return _Features(pixels, descriptors, points)
 
     def estimate(
         self, source: Observation, target: Observation, calibration: Calibration

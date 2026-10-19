@@ -2,7 +2,8 @@
 
 SceneRecall aims to provide persistent open-vocabulary 3D scene memory for
 robotic perception. The current implementation provides canonical RGB-D readers,
-segmented odometry, colored surface-voxel mapping and held-out fusion validation.
+segmented odometry, persistent multiview feature tracks, colored surface-voxel
+mapping and held-out fusion validation.
 Semantic memory and retrieval remain future work.
 
 ## Setup and first run
@@ -58,6 +59,7 @@ and mapping preserves those boundaries. Reference poses are used for diagnostics
 | ScanNet reading, point clouds and pair diagnostics | [ScanNet support](docs/scannet.md) |
 | TUM input, calibration and timestamp association | [TUM support](docs/tum.md) |
 | Backends, failure policy, exports and trajectory metrics | [RGB-D odometry](docs/odometry.md) |
+| Persistent tracks, shared landmarks and covisibility | [Multiview measurements](docs/multiview_tracks.md) |
 | Matched comparisons, analysis and repeat verification | [Odometry comparison workflow](docs/odometry_backend_comparison.md) |
 | Voxel fusion, local submaps and scientific exports | [RGB-D mapping](docs/rgbd_mapping.md) |
 | Native offline visualization and recordings | [Rerun workflow](docs/visualization.md) |
