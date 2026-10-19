@@ -51,6 +51,30 @@ def test_end_to_end_disconnected_maps_exports_and_repeatability(tmp_path):
         run_mapping(run, outputs[0], config)
 
 
+def test_mapping_replays_relocated_tum_source_from_relative_data_path(
+    tmp_path, monkeypatch
+):
+    source, run = make_run(tmp_path)
+    saved, _ = load_trajectory(run)
+    destination = tmp_path / "data" / source.name
+    destination.parent.mkdir()
+    source.rename(destination)
+    monkeypatch.chdir(tmp_path)
+    report = run_mapping(
+        run,
+        tmp_path / "mapping",
+        MappingConfig(pixel_stride=32),
+        source_override=Path("data") / source.name,
+    )
+    assert report["source"]["path"] == saved["source"]["path"]
+    assert report["source"]["resolved_path"] == str(destination)
+    assert (
+        report["verified_canonical_input_sha256"]
+        == saved["source"]["canonical_input_sha256"]
+    )
+    assert report["frame_count"] == 3
+
+
 @pytest.mark.parametrize(
     "corruption", ["rgb", "reference", "fingerprint", "calibration", "archive_metadata"]
 )

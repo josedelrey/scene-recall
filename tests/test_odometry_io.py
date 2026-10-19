@@ -136,7 +136,12 @@ def test_existing_destinations_are_refused_without_modification(tmp_path, inputs
         if kind == "symlink":
             target.mkdir()
             (target / "sentinel").write_bytes(b"preserve")
-        output.symlink_to(target, target_is_directory=True)
+        try:
+            output.symlink_to(target, target_is_directory=True)
+        except OSError as error:
+            if getattr(error, "winerror", None) == 1314:
+                pytest.skip("Windows symbolic-link privilege is unavailable")
+            raise
     with pytest.raises(ValueError, match="already exists"):
         run_io.save_run(output, rows, report, 5)
     if kind == "empty_directory":

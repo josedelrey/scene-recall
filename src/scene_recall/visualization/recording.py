@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import sys
 import tempfile
 from contextlib import contextmanager
 from itertools import groupby
@@ -145,7 +146,11 @@ def recording_stream(output):
             recording.flush()
         finally:
             recording.disconnect()
-        os.link(staged, output)
+        if sys.platform == "win32":
+            # Windows rename refuses existing destinations without requiring links.
+            staged.rename(output)
+        else:
+            os.link(staged, output)
 
 
 def export_recording(

@@ -23,10 +23,10 @@ def code_hash(*additional_paths: Path) -> str:
     """Hash package Python sources, then any additional entry-point contents."""
     digest = hashlib.sha256()
     root = Path(scene_recall.__file__).parent
-    for path in sorted(root.rglob("*")):
-        if path.suffix == ".py":
-            digest.update(str(path.relative_to(root)).encode())
-            digest.update(path.read_bytes())
+    sources = (path for path in root.rglob("*") if path.suffix == ".py")
+    for path in sorted(sources, key=lambda path: path.relative_to(root).as_posix()):
+        digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(path.read_bytes())
     for path in additional_paths:
         digest.update(path.read_bytes())
     return digest.hexdigest()

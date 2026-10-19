@@ -5,12 +5,12 @@ import shutil
 import subprocess
 import sys
 from dataclasses import fields, replace
-from pathlib import Path
 
 import numpy as np
 import pytest
 from helpers.mapping import plane, pose, row, samples
 from helpers.runs import make_run
+from helpers.visualization import rrd
 
 from scene_recall.mapping.pipeline import Keyframe, build_submap
 from scene_recall.mapping.runner import run_mapping
@@ -236,20 +236,9 @@ def test_independent_gauges_have_distinct_named_roots_and_unit_scale():
         assert transform.scale.as_arrow_array().to_pylist() == [[1, 1, 1]]
 
 
-def _rrd(executable, command, path, *extra):
-    result = subprocess.run(
-        [executable, "rrd", command, str(path), *extra],
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    return result.stdout
-
-
 @pytest.mark.parametrize("images", ["keyframes", "all", "none"])
 def test_real_recording_roundtrip_and_unchanged_scientific_outputs(tmp_path, images):
     pytest.importorskip("rerun")
-    executable = shutil.which("rerun") or str(Path(sys.executable).with_name("rerun"))
     _, run = make_run(tmp_path)
     mapping = tmp_path / "mapping"
     run_mapping(run, mapping, MappingConfig(pixel_stride=32, keyframe_stride=2))
@@ -259,8 +248,8 @@ def test_real_recording_roundtrip_and_unchanged_scientific_outputs(tmp_path, ima
         output, mapping_run=mapping, images=images, display=DisplayConfig(25)
     )
     assert output.stat().st_size > 0
-    _rrd(executable, "verify", output)
-    schema = _rrd(executable, "print", output)
+    rrd("verify", output)
+    schema = rrd("print", output)
     assert "BlueprintActivationCommand" in schema
     assert "/segments/0/submaps/0/estimated/map/rgb" in schema
     assert "/segments/1/submaps/1/reference/map/support" in schema
@@ -306,14 +295,12 @@ def test_odometry_only_recording(tmp_path):
 
 def test_sparse_images_are_cleared_at_unlogged_frames(tmp_path):
     pytest.importorskip("rerun")
-    executable = str(Path(sys.executable).with_name("rerun"))
     _, run = make_run(tmp_path, continuous=True)
     mapping = tmp_path / "mapping"
     run_mapping(run, mapping, MappingConfig(pixel_stride=32, keyframe_stride=2))
     output = tmp_path / "sparse.rrd"
     export_recording(output, mapping_run=mapping)
-    schema = _rrd(
-        executable,
+    schema = rrd(
         "print",
         output,
         "--entity",

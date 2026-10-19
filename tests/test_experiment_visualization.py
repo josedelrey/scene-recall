@@ -3,7 +3,6 @@
 import json
 import runpy
 import shutil
-import sys
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -12,7 +11,8 @@ import numpy as np
 import pytest
 from helpers.mapping import plane, pose, row
 from helpers.runs import continuous_run
-from test_visualization import Capture, _rrd, blueprint_views
+from helpers.visualization import rrd
+from test_visualization import Capture, blueprint_views
 
 from scene_recall.mapping.heldout import run_heldout
 from scene_recall.mapping.voxel import MappingConfig
@@ -73,9 +73,8 @@ def test_experiment_rrd_roundtrip_preserves_scientific_files(experiments, name):
         odometry_runs=[odometry],
         display=DisplayConfig(20),
     )
-    executable = str(Path(sys.executable).with_name("rerun"))
-    _rrd(executable, "verify", output)
-    schema = _rrd(executable, "print", output)
+    rrd("verify", output)
+    schema = rrd("print", output)
     assert "BlueprintActivationCommand" in schema
     assert "DepthImage:buffer" in schema
     assert "Tensor:data" in schema
@@ -254,7 +253,7 @@ def test_unavailable_references_keep_maps_without_evaluations(tmp_path, missing)
     )
     output = tmp_path / "unavailable.rrd"
     export_experiment(output, experiment_run=baseline, odometry_runs=[odometry])
-    schema = _rrd(str(Path(sys.executable).with_name("rerun")), "print", output)
+    schema = rrd("print", output)
     assert "Points3D:positions" in schema
     assert "DepthImage:buffer" not in schema
     assert "diagnostics/evaluation" in schema
@@ -517,7 +516,7 @@ def test_selected_submap_and_old_point_only_tsdf(experiments, tmp_path):
         odometry_runs=[odometry],
         submap_ids=[0],
     )
-    schema = _rrd(str(Path(sys.executable).with_name("rerun")), "print", output)
+    schema = rrd("print", output)
     assert "Mesh3D:vertex_positions" not in schema
     assert "view_support" in schema
     with pytest.raises(ValueError, match="submap selection"):

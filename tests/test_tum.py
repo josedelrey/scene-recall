@@ -55,6 +55,8 @@ def test_canonical_units_rgb_calibration_and_registered_frame(tum_sequence):
     # Default GT tolerance cannot support this deliberately sparse GT fixture.
     assert first.T_WC_D is None
     assert first.provenance["rgb_depth_difference_s"] == pytest.approx(0.01)
+    assert first.provenance["rgb_file"] == "rgb/0.png"
+    assert first.provenance["depth_file"] == "depth/0.png"
     points = backproject_depth(first.depth, calibration.K_D)
     np.testing.assert_allclose(points[240, 320], [0.5 / 525, 0.5 / 525, 1])
 
@@ -77,6 +79,18 @@ def test_ground_truth_slerp_direction_and_depth_timestamp(tum_sequence):
     (tum_sequence / "groundtruth.txt").write_text("0 0 0 0 0 0 0 1\n1 2 0 0 0 0 0 -1\n")
     first = load_tum_sequence(tum_sequence, config=config).observations[0]
     np.testing.assert_array_equal(first.T_WC_D[:3, :3], np.eye(3))
+
+
+def test_relative_dataset_path_survives_relocation(tum_sequence, tmp_path, monkeypatch):
+    original = load_tum_sequence(tum_sequence).observations
+    destination = tmp_path.parent / (tmp_path.name + "_relocated")
+    tum_sequence.rename(destination)
+    monkeypatch.chdir(destination.parent)
+    relocated = load_tum_sequence(destination.name).observations
+    for first, second in zip(original, relocated, strict=True):
+        assert first.provenance == second.provenance
+        np.testing.assert_array_equal(first.rgb, second.rgb)
+        np.testing.assert_array_equal(first.depth, second.depth)
 
 
 def test_no_extrapolation_and_missing_ground_truth_keeps_frames(tum_sequence):
