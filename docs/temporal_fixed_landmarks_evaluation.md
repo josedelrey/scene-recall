@@ -2,8 +2,9 @@
 
 Measured locally on 2026-10-19/20. This experiment implements a bounded,
 reference-free two-exposure model and an independent fixed-landmark pose backend.
-Joint landmark optimization remains unimplemented. Sparse and the earlier
-anchor-star pose-only experiment remain unchanged.
+Joint landmark optimization was outside this milestone. The subsequent
+[controlled joint experiment](local_rgbd_ba_evaluation.md) reuses this measurement
+model. Sparse and the earlier anchor-star pose-only experiment remain unchanged.
 
 The [method and reproduction guide](temporal_fixed_landmarks.md) specifies the
 residuals, calibration, uncertainty assumptions, window policy and archive

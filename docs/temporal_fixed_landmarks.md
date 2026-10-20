@@ -2,8 +2,9 @@
 
 This offline experiment addresses the measurement and comparison prerequisites
 identified by the [BA audit](rgbd_ba_prerequisites.md). Camera poses are the only
-optimized variables. Joint landmark optimization, online changes, clock-offset
-fitting and continuous-time trajectory estimation remain outside this milestone.
+optimized variables. The subsequent [local joint BA experiment](local_rgbd_ba.md)
+reuses its saved packets. Online changes, clock-offset fitting and continuous-time
+trajectory estimation remain outside this control.
 
 Measured outcomes, costs and remaining restrictions are in the
 [evaluation report](temporal_fixed_landmarks_evaluation.md).
