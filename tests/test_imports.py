@@ -54,6 +54,7 @@ for module, names in (
     ('icp', ('ICPConfig', 'DepthICPBackend')),
     ('hybrid', ('HybridConfig', 'HybridRGBDBackend')),
     ('local_map', ('LocalMapConfig', 'LocalMapRGBDBackend')),
+    ('recent_map', ('RecentMapConfig', 'RecentMapRGBDBackend')),
 ):
     for name in names:
         assert name in dir(package)

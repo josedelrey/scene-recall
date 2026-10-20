@@ -20,6 +20,7 @@ from scene_recall.odometry.evaluation import error_statistics, pose_error
 from scene_recall.odometry.hybrid import HybridConfig
 from scene_recall.odometry.io import load_trajectory
 from scene_recall.odometry.local_map import LocalMapConfig
+from scene_recall.odometry.recent_map import RecentMapConfig
 from scene_recall.odometry.runner import run_odometry
 from scene_recall.odometry.sparse import SparseConfig
 from scene_recall.run_metadata import sha256
@@ -36,6 +37,15 @@ def variants():
         "median": ("local_map", replace(local, landmark_update="median")),
         "no_fallback": ("local_map", replace(local, pairwise_fallback=False)),
         "short_map": ("local_map", replace(local, max_keyframes=2)),
+        "recent": ("local_map_recent", RecentMapConfig(sparse=sparse)),
+        "anchors": (
+            "local_map_recent",
+            RecentMapConfig(sparse=sparse, association_policy="exhaustive"),
+        ),
+        "index": (
+            "local_map_recent",
+            RecentMapConfig(sparse=sparse, anchor_policy="frozen"),
+        ),
     }
 
 
@@ -248,7 +258,7 @@ def main():
         result["fusion_validation"] = {}
         config = MappingConfig(pixel_stride=8, max_keyframes_per_submap=24)
         for name in args.variants:
-            if variants()[name][0] != "local_map":
+            if variants()[name][0] not in ("local_map", "local_map_recent"):
                 continue
             cohort = {k: load_trajectory(paths[k]) for k in ("sparse", name)}
             try:

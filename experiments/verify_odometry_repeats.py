@@ -36,7 +36,7 @@ def verify_clip(full, repeat):
         if original["source"][key] != rerun["source"][key]:
             raise ValueError(f"repeat source differs: {key}")
     start = rerun["source"]["start"] - original["source"]["start"]
-    if original["backend"] == "local_map" and start != 0:
+    if original["backend"] in ("local_map", "local_map_recent") and start != 0:
         raise ValueError(
             "local-map repeats require identical starting history, use a prefix"
         )

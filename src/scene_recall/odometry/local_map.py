@@ -189,12 +189,19 @@ class LocalMapRGBDBackend:
             <= self.config.sparse.reprojection_threshold_px
         ) & depth_ok
 
+    def _tracking_points(self, matches, calibration):
+        """Return fixed segment points for the original frontend."""
+        return np.array([self.landmarks[i].point_S for i, _ in matches]).reshape(-1, 3)
+
+    def _accept_features(self, index, features, matches):
+        """Extension point for a frontend retaining temporal feature identities."""
+
     def _estimate_map(self, features, calibration, matches):
         diagnostics = {"map_matches": len(matches)}
         if not matches:
             return None, [], {**diagnostics, "map_reason": "no map matches"}
         ids, indices = np.array(matches).T
-        points = np.array([self.landmarks[int(i)].point_S for i in ids])
+        points = self._tracking_points(matches, calibration)
         pixels = features.pixels[indices]
         measured = features.points_R[indices]
         fit = estimate_sparse_pose(points, pixels, calibration.K_R, self.config.sparse)
@@ -366,9 +373,9 @@ class LocalMapRGBDBackend:
                 pose = previous_pose @ np.linalg.inv(fallback.T_C1C0)
                 mode = "pairwise_fallback"
                 if proposals:
-                    ids, indices = np.array(proposals).T
+                    _, indices = np.array(proposals).T
                     selected = self._consensus(
-                        np.array([self.landmarks[int(i)].point_S for i in ids]),
+                        self._tracking_points(proposals, calibration),
                         features.pixels[indices],
                         features.points_R[indices],
                         calibration.T_RD @ np.linalg.inv(pose),
@@ -400,6 +407,7 @@ class LocalMapRGBDBackend:
                 self._insert(
                     target.frame_index, features, pose, matches, calibration, reserved
                 )
+            self._accept_features(target.frame_index, features, matches)
         self._previous = (target, features)
         diagnostics.update(
             tracking_mode=mode,

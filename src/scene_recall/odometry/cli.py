@@ -10,6 +10,7 @@ from scene_recall.datasets.tum import TUMConfig
 from scene_recall.odometry.hybrid import HybridConfig
 from scene_recall.odometry.icp import ICPConfig
 from scene_recall.odometry.local_map import LocalMapConfig
+from scene_recall.odometry.recent_map import RecentMapConfig
 from scene_recall.odometry.runner import run_odometry
 from scene_recall.odometry.sparse import SparseConfig
 
@@ -29,7 +30,9 @@ def main() -> None:
     parser.add_argument("--stop", type=int)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
-        "--backend", choices=("sparse", "icp", "hybrid", "local_map"), default="sparse"
+        "--backend",
+        choices=("sparse", "icp", "hybrid", "local_map", "local_map_recent"),
+        default="sparse",
     )
     parser.add_argument("--local-map-keyframes", type=int, default=6)
     parser.add_argument("--local-map-landmarks", type=int, default=4000)
@@ -37,6 +40,12 @@ def main() -> None:
         "--local-map-update", choices=("frozen", "median"), default="frozen"
     )
     parser.add_argument("--local-map-no-fallback", action="store_true")
+    parser.add_argument(
+        "--recent-map-anchor", choices=("recent", "frozen"), default="recent"
+    )
+    parser.add_argument(
+        "--recent-map-association", choices=("indexed", "exhaustive"), default="indexed"
+    )
     parser.add_argument("--icp-max-iterations", type=int, default=35)
     parser.add_argument("--icp-min-support", type=int, default=30)
     parser.add_argument("--icp-min-support-fraction", type=float, default=0.2)
@@ -84,7 +93,7 @@ def main() -> None:
             ratio=args.ratio,
             mutual_matching=not args.no_mutual,
             max_features=(args.max_features or 1500)
-            if args.backend == "local_map"
+            if args.backend in ("local_map", "local_map_recent")
             else args.max_features,
             iterations=args.iterations,
             confidence=args.confidence,
@@ -114,13 +123,27 @@ def main() -> None:
                 args.hybrid_max_correction_m,
                 args.hybrid_max_correction_deg,
             )
-        elif args.backend == "local_map":
-            config = LocalMapConfig(
+        elif args.backend in ("local_map", "local_map_recent"):
+            config_type = (
+                RecentMapConfig
+                if args.backend == "local_map_recent"
+                else LocalMapConfig
+            )
+            options = (
+                {
+                    "anchor_policy": args.recent_map_anchor,
+                    "association_policy": args.recent_map_association,
+                }
+                if args.backend == "local_map_recent"
+                else {}
+            )
+            config = config_type(
                 sparse=config,
                 max_keyframes=args.local_map_keyframes,
                 max_landmarks=args.local_map_landmarks,
                 landmark_update=args.local_map_update,
                 pairwise_fallback=not args.local_map_no_fallback,
+                **options,
             )
     except (TypeError, ValueError) as error:
         parser.error(str(error))

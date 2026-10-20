@@ -1,6 +1,6 @@
 # Selectable RGB-D odometry
 
-Four independently selectable backends consume canonical observations and
+Five independently selectable backends consume canonical observations and
 calibration through the same sequential tracker:
 
 | Backend | Initialization and objective | Failure behavior |
@@ -9,6 +9,7 @@ calibration through the same sequential tracker:
 | `icp` | Identity for each pair, independent multiscale depth point-to-plane ICP | Failed or unconverged geometry starts a new segment |
 | `hybrid` | Complete accepted sparse pose, followed by the same ICP | Sparse failure starts a segment, ICP failure explicitly retains sparse by default |
 | `local_map` | Experimental persistent keyframe landmarks, map-to-frame PnP and RGB-D consensus | Map rejection tries Sparse fallback, total failure resets the map and starts a segment |
+| `local_map_recent` | Experimental temporal identity propagation, indexed map recovery and geometrically checked recent-depth anchors | Same Sparse fallback and segment reset policy as `local_map` |
 
 Sparse is the default.
 Dataset parsing stays in adapters. Reference poses are used only by evaluation.

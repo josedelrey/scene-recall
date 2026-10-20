@@ -18,6 +18,8 @@ __all__ = [
     "LocalMapRGBDBackend",
     "PairEstimate",
     "PairwiseBackend",
+    "RecentMapConfig",
+    "RecentMapRGBDBackend",
     "SparseConfig",
     "SparseRGBDBackend",
     "TrajectoryFrame",
@@ -31,6 +33,8 @@ _BACKEND_MODULES = {
     "ICPConfig": "icp",
     "LocalMapConfig": "local_map",
     "LocalMapRGBDBackend": "local_map",
+    "RecentMapConfig": "recent_map",
+    "RecentMapRGBDBackend": "recent_map",
     "SparseConfig": "sparse",
     "SparseRGBDBackend": "sparse",
 }

@@ -1,7 +1,9 @@
 # Experimental incremental local-map tracking
 
 `local_map` estimates incoming camera poses against retained metric landmarks.
-Sparse remains the default. The frontend has bounded state, explicit fallback
+The opt-in `local_map_recent` revision refreshes depth measurements and searches
+a bounded landmark descriptor index. Both remain experimental. Sparse remains
+the default. Each frontend has bounded state, explicit fallback
 and independent trajectory segments. Loop closure, global relocalization,
 pose-graph optimization and joint bundle adjustment are outside its scope.
 
@@ -19,6 +21,13 @@ flags apply. Local-map CLI controls are `--local-map-keyframes`,
 `--local-map-landmarks`, `--local-map-update frozen|median`, and
 `--local-map-no-fallback`. The local-map feature budget defaults to 1500.
 `LocalMapConfig` exposes the remaining engineering thresholds programmatically.
+
+Select `--backend local_map_recent` to use the revision. Its feature budget and
+geometric gates match `local_map`. `--recent-map-anchor recent|frozen` and
+`--recent-map-association indexed|exhaustive` expose independent policy controls.
+`RecentMapConfig` and `RecentMapRGBDBackend` provide the equivalent Python API.
+This backend requires `--local-map-update frozen`, the default, because it owns
+the point-refresh policy itself.
 
 ```python
 from scene_recall.odometry import LocalMapConfig, LocalMapRGBDBackend
@@ -88,6 +97,42 @@ for RGB/depth exposure differences.
 
 ## Reproduce the comparison
 
+The refinement driver compares original Sparse, budget Sparse, budget Hybrid,
+the original local map and the recent-depth revision. Use the same settings for
+development and independent scenes:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 uv run --locked python \
+  experiments/refine_local_map.py \
+  --tum-path /path/to/independent_tum_sequence --start 0 --stop 300 \
+  --output-dir outputs/local_map_refinement/independent \
+  --evaluate-maps --tsdf-first-chunk
+```
+
+`--resume` accepts only matching source, configuration and implementation hashes.
+`--variants sparse budget local recent anchors index` runs the development
+ablations. `anchors` refreshes depth with exhaustive association, while `index`
+uses indexed association with frozen depth anchors. Default settings are fixed
+before independent evaluation, with no scene-specific threshold selection.
+
+The canonical reader rejects duplicated reference timestamps. For a source with
+ambiguous references, `experiments/prepare_tum_references.py --source ORIGINAL
+--output-dir PREPARED` creates a separate copy omitting every row at duplicated
+timestamps. It preserves image bytes and all other reference rows, records both
+table hashes, and leaves the original untouched. Decreasing timestamps still
+require a separate audit. This is an explicit dataset preparation step.
+
+Surface fusion uses one shared training/target cohort and exact common
+reference-target masks across budget Sparse, Hybrid and both map backends.
+Differing segment boundaries withhold the fusion comparison. Optional TSDF
+evaluation uses chunk zero, chosen before examining scores, with the same
+training and withheld target frames. It includes reference-pose fusion and a
+20 cm capped absolute-error score that charges missing predictions 20 cm.
+Reference targets never enter fusion. They have already been observed by the
+online tracker, so this evaluates reconstruction rather than novel-view tracking.
+
+The original experiment remains available:
+
 ```bash
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 uv run --locked python \
   experiments/incremental_local_map.py \
@@ -127,8 +172,171 @@ This controlled probe compares the same-budget Sparse and local-map paths on
 clean inputs, a ten-frame missing-depth interval, black RGB, and 50% depth-scale
 bias. It retains trajectories and all loss indices. These interventions test
 specific failure mechanisms and do not estimate natural failure probabilities.
+Pass `--include-recent` to either the outage probe or the analytic anchor-bias
+control to include the revision while retaining the original controls.
 
-## Evaluation on 2026-10-20
+## Recent-depth and indexed association policy
+
+Persistent identity and retained-view geometry remain the map's constraints.
+On each incoming frame, mutual descriptor matches first carry identities from
+the previous accepted image. Insufficient count or image-grid support triggers
+search against one latest retained descriptor per landmark. A rejected map fit
+also triggers that search before Sparse fallback. Search always runs before
+keyframe insertion to prevent reappearing known features from being seeded
+under fresh identities. Ambiguous associations reserve their pixels and cannot
+create new landmarks. The index contains at most the map's 4000 identities.
+
+For an identity observed in the preceding image, valid source depth can replace
+the nominal map point during PnP. The point is transformed by that source's
+accepted pose and must pass pixel and available-depth checks in every retained
+keyframe that observes it. Other identities retain their nominal metric points.
+This gives local motion a recent measurement while preserving map localization
+through missing depth, occlusion or reappearing landmarks.
+
+At keyframe insertion, a new depth point can refresh the nominal landmark only
+if it agrees with every retained observation and the incoming observation. If
+refresh fails, the old point must still agree with the incoming observation
+before that observation joins the landmark. Rejected observations remain
+reserved. This maintains consistency inductively through insertion and eviction.
+Committed keyframe poses never change. There is no pose smoothing or trajectory
+revision, and reference poses do not enter association, estimation or insertion.
+
+This policy does not estimate independent landmark uncertainty. Recent points
+and retained poses share estimation errors. Depth remains a consensus gate,
+and the pose solver minimizes pixel residuals. All-view agreement bounds the
+stored geometry without proving correctness or supplying calibrated information.
+`recent_depth_anchors` counts valid candidates in the last point-selection
+check, which can occur during insertion. It is not a count of independent pose
+inliers and should not be divided by `map_inliers` as an information fraction.
+
+## Refinement evaluation on 2026-10-20
+
+The revision keeps the original numeric gates and budgets. Policies were frozen
+before inspecting four predeclared 300-frame windows from two independent
+[TUM sequences](https://cvg.cit.tum.de/data/datasets/rgbd-dataset/download):
+Freiburg 2 Desk and Freiburg 3 Long Office Household. The windows start at 0 and
+1200 associated inputs. These are four windows from two scenes, without four
+independent scene replicates. All five backends remain continuous on them.
+The canonical registered-image pinhole approximation stays unchanged.
+
+The table reports fixed-scale position ATE in millimeters. Budget Sparse and
+Hybrid use the same 1500-feature cap as both map frontends. Reference counts
+are 281, 182, 297 and 300 respectively. Missing references remain missing.
+
+| Independent window | Budget Sparse | Hybrid | Original map | Recent map |
+| --- | ---: | ---: | ---: | ---: |
+| Freiburg 2 Desk, 0:300 | 17.35 | 90.36 | 36.33 | 27.88 |
+| Freiburg 2 Desk, 1200:1500 | 13.05 | 105.76 | 7.85 | 15.24 |
+| Freiburg 3 Office, 0:300 | 37.31 | 97.12 | 22.67 | 8.75 |
+| Freiburg 3 Office, 1200:1500 | 21.50 | 59.62 | 18.09 | 7.51 |
+
+Single-frame translation RPE improves relative to the original map on all four
+windows, by approximately 10–30%, while remaining approximately 0.5–5.2% worse
+than budget Sparse. Office 100-frame RPE improves from 66.00 to 17.35 mm and
+25.90 to 16.84 mm versus budget Sparse. Both Desk windows remain worse at that
+horizon. In particular, the original map's late-Desk 16.01 mm grows to 32.91 mm.
+The recent measurement policy trades away a useful long-lived constraint there.
+
+Historical full-run controls show the same motion/anchoring trade-off. Each cell
+below is position ATE / one-frame translation RPE, both in millimeters.
+
+| Case | Budget Sparse | Original map | Recent map |
+| --- | ---: | ---: | ---: |
+| XYZ, 792 inputs | 55.11 / 5.29 | 37.26 / 6.21 | 47.43 / 5.46 |
+| Desk, 573 inputs | 75.84 / 9.48 | 39.24 / 10.26 | 46.69 / 9.90 |
+| RPY, largest segment ATE | 50.64 / 8.18 | 51.74 / 11.04 | 58.53 / 9.08 |
+
+All retain RPY's loss at frame 115. Its ATE covers only the 579-frame segment
+115:694, while RPE pools eligible pairs within both segments. There is no
+full-sequence RPY ATE. Lower jitter does not preserve every longer-horizon gain.
+
+Downstream surface fusion uses the shared reference-target cohort. The next
+table reports capped absolute error in millimeters over every valid target
+sample, charging a missing prediction 200 mm. This supplements common-mask
+depth errors, coverage and explained fractions retained in the reports.
+
+| Independent window | Views | Budget Sparse | Original map | Recent map |
+| --- | ---: | ---: | ---: | ---: |
+| Freiburg 2 Desk, 0:300 | 23 | 52.84 | 47.83 | 53.38 |
+| Freiburg 2 Desk, 1200:1500 | 6 | 68.11 | 67.89 | 68.85 |
+| Freiburg 3 Office, 0:300 | 6 | 37.66 | 37.46 | 35.97 |
+| Freiburg 3 Office, 1200:1500 | 29 | 59.59 | 46.58 | 43.47 |
+
+Missing training references withhold entire chunks. The early-Desk final chunk,
+late-Desk first chunk and early-Office first chunk are unavailable. Lower late-Desk
+common-mask MAE, 37.66 to 33.33 mm, accompanies worse coverage and a worse capped
+score. On late Office, explained target fraction improves from 76.65% to 80.14%
+and coverage from 91.78% to 92.44%. The gain transfers to TSDF: its capped score
+improves from 27.90 to 25.38 mm. Early-Desk TSDF instead worsens slightly, from
+34.45 to 34.99 mm. The predetermined first-chunk TSDF comparisons for late Desk
+and early Office are withheld. No better-scoring chunk replaces them.
+Early-Desk position ATE improves while its capped surface error worsens, so ATE
+alone would have selected a worse reconstruction policy on that window.
+
+ScanNet regressions persist. On 1000:1200, ATE changes 60.86 to 62.03 mm and
+one-frame RPE 13.71 to 12.02 mm, versus budget Sparse's 38.39 and 9.08 mm.
+TSDF capped error worsens from 46.25 to 48.73 mm. On 3500:3700, ATE improves
+57.00 to 54.35 mm, one-frame RPE worsens 10.39 to 10.51 mm, and TSDF capped error
+improves 70.99 to 68.57 mm. Neither clip establishes a general ScanNet solution.
+
+Full XYZ and Desk first-chunk TSDF capped error also worsens against the original
+map, 25.98 to 30.91 mm and 50.45 to 51.62 mm. RPY's predetermined first chunk
+improves 92.40 to 76.01 mm, but its surface score over all eligible chunks worsens
+84.00 to 87.79 mm. A favorable early-chunk mesh is not a full-run geometry gain.
+
+Development ablations separate the policies. On XYZ200, original/recent-depth
+with exhaustive matching/indexed frozen/full revision ATE is
+11.98/12.62/13.04/14.47 mm, while one-frame RPE is
+6.04/5.89/5.81/5.58 mm. On ScanNet 3500:3700 the corresponding one-frame RPE is
+10.39/9.60/12.32/10.51 mm. Indexed association can lose accurate local motion.
+The largest full-revision regressions there have only 18–29 temporal identity
+matches, yet pass coverage and information gates after map search. These
+diagnostics indicate insufficient protection against uncertain retained anchors.
+They do not identify sensor bias as the physical cause.
+
+A supplementary Freiburg 2 Desk window, 1500:1700, was selected after the primary
+runs using reference availability alone. It is the earliest nonoverlapping
+200-frame block on a fixed grid with all training references available. The
+selection record retains every rejected candidate and all primary results.
+Settings stay unchanged. Budget/original/recent ATE is 25.52/12.67/7.43 mm and
+TSDF capped error is 35.79/35.37/34.23 mm. Surface coverage still decreases from
+91.27% to 90.63% and explained fraction from 82.66% to 81.85% relative to the
+original map. This availability-selected control does not replace the primary
+generalization test or establish uniformly better reconstruction.
+
+The analytic initial-depth-bias control improves endpoint error from 3.425 to
+0.190 mm, matching Sparse's 0.190 mm. Both map policies bridge the ten-frame
+missing-depth interval without losses, while Sparse loses ten transitions.
+All three lose eleven transitions with black RGB. With 50% corrupt depth, all
+remain continuous but produce inaccurate motion. The revision reduces that
+probe's position ATE from 13.52 to 9.83 mm. Continuity is not proof of correctness.
+
+Freiburg 2's original archive has two conflicting reference rows at one repeated
+timestamp. A separate prepared copy omits both, with table hashes and original
+archives retained. The ambiguous timestamp lies outside the primary windows.
+No dataset reader, calibration, reference tolerance or benchmark alignment was
+changed to obtain these results. Reports, frozen protocols and paired evidence
+are retained under ignored `outputs/local_map_refinement/`.
+
+After concurrent evaluations finished, two serial 40-frame XYZ prefixes in
+opposite backend orders measured 3.69–3.79 frames/s for the revision,
+2.53–2.56 for the original map, 4.32–4.35 for budget Sparse, 3.92–3.97 for
+unlimited Sparse and 1.42 for Hybrid. Opening, decoding and tracking are included.
+The last 20 frames have median extraction near 170 ms and map tracking near
+48 ms for the revision, versus 262 ms for the original map. Keyframe search
+and updates still cause latency variation. These short cached-input prefixes
+are indicative, without a real-time or machine-isolation guarantee.
+
+All 14 replay checks match every trajectory array and non-timing diagnostic
+exactly, including 200-frame prefixes against full runs. All 19 retained legacy
+replays match all 12 trajectory arrays, complete evaluations and non-timing
+frame diagnostics from the original study. Verification passes 837 tests,
+Ruff lint/format and whitespace checks. No dependency change is required.
+`evidence_summary.json`, `baseline_equivalence.json`,
+`prefix_reproducibility.json`, `serial_timing.json` and frozen protocol records
+retain the detailed paired populations and fingerprints in the output directory.
+
+## Original fixed-anchor controls on 2026-10-20
 
 Fixed settings were evaluated on all associated XYZ, Desk and RPY inputs and
 two 200-frame ScanNet clips. Position ATE uses fixed-scale SE(3) alignment and
@@ -228,9 +436,13 @@ remain limitations. The bounded window supplies local continuity without
 global recovery. Earlier offline BA experiments use future measurements and
 different optimization populations, so they are not matched online baselines.
 
-Before promotion, evaluate independent scenes, stronger rotations and wider
-frame gaps. Develop visibility/covisibility search to reduce matching cost,
-then test uncertainty-aware landmarks and exposure-aware pose factors with
-fixed controls. Joint local optimization should preserve committed boundaries
-and use the existing observability checks. More threshold searches on these
+Both map policies remain experimental. Before promotion, expand beyond these two
+new rooms and the one ScanNet capture, with stronger rotations and wider frame
+gaps. Test uncertainty-aware depth and landmark factors, including RGB/depth
+exposure motion, against the current recent/frozen controls. Visibility and
+covisibility search should preserve older appearances without exhaustive matching
+or weak temporal support. Joint local optimization should preserve committed
+boundaries and use the existing observability checks. Promotion requires
+consistent local-motion, continuity and coverage-aware reconstruction gains,
+plus longer controlled latency measurements. More threshold searches on these
 same clips would provide weaker evidence.

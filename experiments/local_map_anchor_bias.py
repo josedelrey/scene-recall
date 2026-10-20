@@ -19,11 +19,12 @@ from scene_recall.geometry.camera import project_points, transform_points
 from scene_recall.odometry.evaluation import evaluate_trajectory
 from scene_recall.odometry.local_map import LocalMapConfig, LocalMapRGBDBackend
 from scene_recall.odometry.pipeline import track_observations
+from scene_recall.odometry.recent_map import RecentMapConfig, RecentMapRGBDBackend
 from scene_recall.odometry.sparse import SparseConfig, SparseRGBDBackend
 from scene_recall.run_metadata import code_hash
 
 
-def run_control(output):
+def run_control(output, include_recent=False):
     if output.exists() or output.is_symlink():
         raise ValueError("choose a fresh control output")
     cv2.setNumThreads(1)
@@ -61,10 +62,15 @@ def run_control(output):
         "variants": {},
     }
     arrays = {"reference": np.array([o.T_WC_D for o in observations])}
-    for name, backend in (
+    backends = [
         ("sparse", SparseRGBDBackend(sparse)),
         ("local", LocalMapRGBDBackend(config)),
-    ):
+    ]
+    if include_recent:
+        recent = RecentMapConfig(sparse=sparse)
+        result["recent_config"] = asdict(recent)
+        backends.append(("recent", RecentMapRGBDBackend(recent)))
+    for name, backend in backends:
         extract = lambda observation, calibration: features[observation.frame_index]
         if name == "sparse":
             backend._features = extract
@@ -84,8 +90,9 @@ def run_control(output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--include-recent", action="store_true")
     args = parser.parse_args()
-    run_control(args.output_dir)
+    run_control(args.output_dir, args.include_recent)
 
 
 if __name__ == "__main__":
