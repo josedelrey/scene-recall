@@ -69,6 +69,7 @@ def evaluate_pose_maps(
     *,
     variants=("anchored", "frozen", "linear"),
     chunk_ids=None,
+    allow_partial_training_reference=False,
 ):
     """Fuse identical training RGB-D samples with surface voxels and TSDF meshes.
 
@@ -76,6 +77,10 @@ def evaluate_pose_maps(
     module. It neither adjusts trajectories nor chooses training observations.
     Native target samples never enter fusion. Estimated-target renders are a
     separate diagnostic and cannot replace the reference-target result.
+
+    The explicit partial-reference diagnostic needs the first training anchor
+    and each scored target reference. It never scores the incomplete reference
+    training cloud as a paired reconstruction. The default remains all-paired.
     """
     if output.exists() or output.is_symlink():
         raise ValueError("map evaluation output already exists")
@@ -224,11 +229,19 @@ def evaluate_pose_maps(
             paired = all(
                 m.report["comparison_status"] == "paired" for m in submaps.values()
             )
+            render_ready = paired or (
+                allow_partial_training_reference
+                and all(
+                    m.report["reference_anchor_frame"] == train[0]
+                    and m.T_MW_reference is not None
+                    for m in submaps.values()
+                )
+            )
             buffers = {}
             for index in targets:
                 row = baseline_rows[index]
                 if (
-                    not paired
+                    not render_ready
                     or row.reference_pose is None
                     or not is_rigid(row.reference_pose)
                 ):
@@ -322,6 +335,8 @@ def evaluate_pose_maps(
             "total_seconds": perf_counter() - started,
             "code_sha256": code_hash(),
         }
+        if allow_partial_training_reference:
+            report["reference_policy"] = "valid_first_training_anchor_and_scored_target"
         (staging / "report.json").write_text(
             json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8"
         )

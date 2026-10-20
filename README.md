@@ -62,6 +62,7 @@ and mapping preserves those boundaries. Reference poses are used for diagnostics
 | Persistent tracks, shared landmarks and covisibility | [Multiview measurements](docs/multiview_tracks.md) |
 | Bounded experimental pose-only refinement and map evaluation | [Pose-only multiview experiment](docs/pose_only_multiview.md) |
 | Opt-in shared-landmark refinement and matched temporal controls | [Local RGB-D BA experiment](docs/local_rgbd_ba.md) |
+| Persistent-track batch fitting, trajectory gains and remaining limits | [Batch multiview investigation](docs/batch_multiview.md) |
 | Matched comparisons, analysis and repeat verification | [Odometry comparison workflow](docs/odometry_backend_comparison.md) |
 | Voxel fusion, local submaps and scientific exports | [RGB-D mapping](docs/rgbd_mapping.md) |
 | Native offline visualization and recordings | [Rerun workflow](docs/visualization.md) |
