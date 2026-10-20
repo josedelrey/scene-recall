@@ -446,3 +446,237 @@ boundaries and use the existing observability checks. Promotion requires
 consistent local-motion, continuity and coverage-aware reconstruction gains,
 plus longer controlled latency measurements. More threshold searches on these
 same clips would provide weaker evidence.
+
+## Reliability controls
+
+The reliability investigation is isolated in `experiments/`. It leaves the
+production frontends, defaults, original comparison drivers and saved baselines
+unchanged. The candidate module is not registered as a backend or CLI option.
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 uv run --locked python \
+  experiments/investigate_local_map.py \
+  --tum-path /path/to/independent_sequence --start 0 --stop 300 \
+  --output-dir outputs/local_map_reliability/independent --evaluate-maps
+```
+
+Each case runs budget Sparse, the instrumented recent-map baseline, weighted
+RGB, weighted RGB-D and descriptor-family association. All use the same immutable
+SIFT measurements and the original consensus, geometry and insertion thresholds.
+Every candidate maintains its own online map history. The instrumented baseline
+can verify every trajectory array and shared numerical diagnostic against an
+existing recent-map run with `--baseline PATH`. Fresh output directories are
+required. Experiment reports preserve script fingerprints separately from the
+unchanged package fingerprint.
+
+Weighted fitting propagates a source RGB-ray point covariance to the target.
+The source covariance uses one-pixel feature uncertainty and axial depth sigma
+`0.005 + 0.003 z²` meters, inherited from the earlier measurement experiment.
+The RGB residual covariance includes source point uncertainty plus one-pixel
+incoming RGB uncertainty. The RGB-D alternative adds one axial target-depth row
+and its covariance, retaining the pixel/depth cross terms induced by the source
+point. Missing depth contributes only RGB rows. It does not count a target 3D
+point on the RGB ray as an independent lateral measurement. The solver uses
+bounded Cauchy IRLS, with per-step frozen whitening and line-search checks.
+It rechecks the original consensus and support gates before accepting a change.
+These are conditional engineering covariances, without camera-pose uncertainty,
+inter-landmark correlations, depth bias or exposure-motion compensation.
+The method is an approximate weighted fit, without a calibrated likelihood or
+posterior-covariance claim.
+
+Descriptor-family matching retains all active keyframe appearances. It takes the
+minimum descriptor distance within an identity, then applies mutual ratio tests
+over distinct landmark identities and target features. This prevents two views
+of one landmark competing in the ratio denominator. Temporal propagation,
+ambiguous-association reservation and insertion geometry remain unchanged.
+Appearance matching is tested separately from the measurement alternatives.
+
+`experiments/local_map_reliability_controls.py` generates known-correspondence
+trials with independent noise, coherent depth bias and hidden depth-exposure
+motion. `experiments/diagnose_local_map_reliability.py` evaluates every seventh
+input's saved packets, descriptor-only three-view cycles, shared native samples
+and RGB/depth compatibility. A spatial checkerboard holdout compares ordinary
+PnP, robust RGB, weighted RGB and weighted RGB-D on identical support. Reference
+poses enter only the diagnostics, never fitting or association. Residuals on
+accepted support are selection-conditioned and do not calibrate a noise model.
+
+The frozen evaluation retains four prior 300-frame windows from Freiburg 2 Desk
+and Freiburg 3 Office, plus new 600:800 windows from both scenes. These are six
+windows from two independent scenes relative to development, not six independent
+scene replicates or two newly acquired scenes. ScanNet uses two 200-frame clips
+from the same existing capture. There is no second independent ScanNet capture.
+No scene-specific thresholds or score-selected windows are introduced.
+
+Reconstruction uses the existing shared temporal training/target split, 2 cm
+surface voxels, stride-eight depth and first-chunk TSDF. Missing training
+references withhold the chunk. All alternatives are also scored on one exact
+common reference-target mask. Coverage and the 20 cm capped missing-prediction
+score retain the full valid-target denominator. Targets are withheld from
+fusion, while their images have already been seen by the online frontend.
+Concurrent cases and shared extraction caches preclude a controlled runtime
+ranking.
+
+The complete fixed matrix can be reproduced with portable source paths:
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 uv run --locked python \
+  experiments/run_local_map_reliability.py \
+  --desk-path /path/to/prepared_freiburg2_desk \
+  --office-path /path/to/freiburg3_long_office_household \
+  --sens-path /path/to/scene0000_00.sens \
+  --output-dir outputs/local_map_reliability/repeat
+```
+
+Optional `--baseline-root` supplies the prior refinement matrix for exact
+legacy comparisons. `--protect` accepts scientific output roots to fingerprint
+before execution. The default is serial execution. `--workers` permits concurrent
+cases, whose timing must not be interpreted as a latency comparison.
+`experiments/summarize_local_map_reliability.py --root ROOT` checks the shared
+reconstruction controls and computes common-mask scores.
+`experiments/verify_local_map_reliability.py --root ROOT` verifies protected
+files and replays every policy's first 40 inputs from saved features with all
+reference poses removed. Saved feature packets support numerical replay, while
+canonical source hashes remain the raw-input identity authority.
+
+Propagating measurement covariance is supported by prior RGB-D work, including
+[Proença and Gao](https://arxiv.org/abs/1706.04034) and
+[Belter, Nowicki and Skrzypczyński](https://link.springer.com/article/10.1007/s00138-018-0936-9).
+Their results motivate testing sensor and processing uncertainty. They do not
+validate the noise assumptions, fixed-camera approximation or experimental
+results reported here.
+
+## Reliability findings on 2026-10-20
+
+All 40 online runs remain continuous across 2,000 distinct inputs. Weighted
+RGB-D lowers one-frame translation RPE in all eight windows and position ATE in
+all six TUM windows. Both ScanNet clips worsen in ATE and endpoint orientation.
+This is a useful local-motion improvement, without meeting the frontend's
+reliability criteria. Sparse stays default and all candidates stay experimental.
+
+The table reports millimeters. ATE is fixed-scale SE(3)-aligned position error.
+Recent denotes the unchanged recent-depth baseline. RGB-D denotes the conditional
+weighted RGB-D experiment, which also changes the robust fitting objective.
+Budget Sparse uses the same 1500-feature cap as every map alternative.
+
+| Window | Budget ATE | Recent ATE | RGB-D ATE | Recent one-frame RPE | RGB-D one-frame RPE |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Desk 0:300 | 17.35 | 27.88 | 26.23 | 3.41 | 3.27 |
+| Desk 1200:1500 | 13.05 | 15.24 | 12.27 | 2.18 | 1.89 |
+| Desk 600:800 | 4.78 | 11.16 | 10.60 | 2.15 | 2.09 |
+| Office 0:300 | 37.31 | 8.75 | 8.56 | 5.14 | 4.47 |
+| Office 1200:1500 | 21.50 | 7.51 | 5.33 | 3.99 | 3.20 |
+| Office 600:800 | 16.31 | 20.14 | 13.11 | 3.78 | 3.53 |
+| ScanNet 1000:1200 | 38.39 | 62.03 | 65.29 | 12.02 | 11.48 |
+| ScanNet 3500:3700 | 49.80 | 54.35 | 59.85 | 10.51 | 9.52 |
+
+Desk 600:800 has only 105 valid reference poses and no controlled reconstruction
+chunk because 11 training references are unavailable. The other primary-window
+reference gaps remain as documented above. These populations are descriptive
+windows from two TUM scenes and one ScanNet capture, without scene-level
+significance estimates or a new independent ScanNet capture.
+
+Downstream capped errors below use millimeters, charge missing predictions
+200 mm and preserve each valid-target denominator. Surface fusion covers 124
+target views and first-chunk TSDF covers 106. Every alternative shares exactly
+the same evaluated targets, reference-pose targets and across-alternative common
+masks. Withheld cells remain unavailable.
+
+| Window | Recent surface | RGB-D surface | Recent TSDF | RGB-D TSDF |
+| --- | ---: | ---: | ---: | ---: |
+| Desk 0:300 | 53.38 | 52.11 | 34.99 | 34.70 |
+| Desk 1200:1500 | 68.85 | 67.69 | withheld | withheld |
+| Desk 600:800 | withheld | withheld | withheld | withheld |
+| Office 0:300 | 35.97 | 36.59 | withheld | withheld |
+| Office 1200:1500 | 43.47 | 44.05 | 25.38 | 25.58 |
+| Office 600:800 | 61.03 | 54.17 | 53.22 | 45.96 |
+| ScanNet 1000:1200 | 75.19 | 72.81 | 48.73 | 43.44 |
+| ScanNet 3500:3700 | 80.56 | 82.83 | 68.57 | 71.58 |
+
+Weighted RGB-D improves four of seven available surface comparisons and three
+of five TSDF comparisons. Office's two primary surface scores worsen despite
+better ATE, while the new middle window improves both representations. ScanNet
+1000 improves TSDF but still trails budget Sparse's 36.04 mm. ScanNet 3500
+worsens both representations. No method wins consistently across motion,
+orientation, coverage and reconstruction.
+
+Appearance history has a real but scene-dependent effect. Descriptor-family
+matching improves middle-Office surface/TSDF scores from 61.03/53.22 to
+53.69/45.20 mm. On ScanNet 1000 it improves surface error from 75.19 to 67.36 mm,
+yet worsens TSDF from 48.73 to 66.97 mm and ATE from 62.03 to 76.91 mm.
+Keeping more descriptors does not establish correct association or a better map.
+The combined family-plus-weighted alternative was not tested, so additivity
+is unknown.
+
+### Interpretation and development decision
+
+- Landmark information remains conditional on frozen camera poses. Counts of
+  repeated observations do not remove shared pose error. Between 6.3% and 8.4%
+  of sampled support duplicates an anchor's native depth sample. Unique samples
+  can also share sensor and pose errors. The experiment does not estimate these
+  correlations or calibrated posterior uncertainty.
+- RGB-D consistency is a modeling limitation. Desk's reported color/depth skew
+  has RMS 3.35–14.07 ms across these windows, compared with 0.21–0.42 ms for
+  Office. ScanNet's stored zero clocks remain unknown. Office regressions with
+  much smaller recorded skew rule out attributing every failure to this timing
+  proxy alone. Calibration, acquisition latency, viewpoint-dependent sampling,
+  correlated depth error and reference error remain unresolved physical causes.
+- The spatial holdout changes little under covariance weighting alone. On
+  ScanNet 1000, robust RGB, weighted RGB and weighted RGB-D give 1.438, 1.434 and
+  1.426 px held-out RGB RMSE, versus 1.446 px for PnP. Weighted RGB-D changes
+  held-out depth RMSE from 16.36 to 16.28 mm. Such conditional packet gains do
+  not predict the subsequent online map history or reconstruction reliably.
+- Short descriptor cycles disagree in about 0.27–0.55% of eligible cycles. This
+  measures consistency only on the mutually matchable subset. Cycle-consistent
+  wrong associations and missed associations remain possible. More appearance
+  history helps one window and harms others, without a reliable association
+  confidence model.
+- The known-correspondence controls reduce translation RMSE from 2.919 to
+  2.426 mm under independent noise, but hidden 6 ms depth motion increases the
+  RGB-D result to 3.059 mm, above PnP's unchanged 2.919 mm. Coherent depth bias
+  is not estimated. Real ten-frame depth gaps retain zero map losses versus ten
+  for Sparse, black RGB gives eleven losses for every policy, and 50% biased
+  depth still passes without losses. Weighted RGB-D ATE then rises from 7.11
+  to 10.90 mm. Continuity does not certify measurement correctness.
+
+The ScanNet ranking is not explained solely by the previously observed
+reference jumps at multiples of ten. On 1000:1200, non-boundary one-frame
+translation RPE is 8.58 mm for budget Sparse, 11.52 mm for Recent and 11.30 mm
+for weighted RGB-D. These reference-relative results still do not establish
+physical pose truth or generalize to another ScanNet capture.
+
+Keep the recent-map frontend and these alternatives as reproducible controls.
+Stop tuning the frozen-keyframe policy against the retained windows. Move toward
+a broader SLAM architecture that preserves raw measurements and supports
+revisable local poses and landmarks, explicit shared uncertainty, observation
+identities for reused native samples and reconstruction reintegration. A bounded
+local graph is the next useful architectural step. A global pose graph alone
+cannot repair inconsistent local factors or wrong visual identities.
+
+Before promotion, evaluate that architecture on a second ScanNet capture,
+stronger rotations and wider input cadence, with independent checks of camera
+geometry and exposure timing. Continue to report continuity, orientation,
+local and longer-horizon motion, fixed-cohort coverage-aware reconstruction
+and controlled runtime. Do not use per-scene method selection or threshold
+searches on this matrix. Loop closure and relocalization should consume an
+explicitly qualified frontend, rather than assume these limitations are solved.
+
+### Preservation and reproducibility
+
+The evidence is retained under ignored `outputs/local_map_reliability/`.
+`summary.json` contains every variant and exact paired populations.
+`measurement_diagnostics.json`, `controls_verified/`, `outages_verified/` and
+`verification.json` retain the measurement and failure controls. The six prior
+Recent runs reproduce all 12 trajectory arrays and shared numerical diagnostics
+exactly. All 40 forty-input feature replays reproduce exact poses, statuses and
+numerical diagnostics with reference poses removed. Five additional raw-input
+pilot repeats are exact. All 806 protected prior scientific files are unchanged.
+A recorded baseline-link correction resolves swapped ScanNet directory labels
+using their source metadata, without rewriting trajectories or changing ranges.
+The suite launcher now checks these links before execution.
+
+The complete suite passes 849 tests. Ruff lint, formatting and whitespace checks
+pass. Package source, defaults, dependencies and lockfile are unchanged. No
+commit, push or context synchronization was performed. Cached and concurrent
+execution supports no controlled runtime or real-time claim. Independent
+ScanNet generalization, calibrated uncertainty, full-sequence evaluation of the
+new candidates and native Windows replay remain unverified.
