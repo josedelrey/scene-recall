@@ -14,6 +14,8 @@ __all__ = [
     "HybridConfig",
     "HybridRGBDBackend",
     "ICPConfig",
+    "LocalMapConfig",
+    "LocalMapRGBDBackend",
     "PairEstimate",
     "PairwiseBackend",
     "SparseConfig",
@@ -27,6 +29,8 @@ _BACKEND_MODULES = {
     "HybridConfig": "hybrid",
     "HybridRGBDBackend": "hybrid",
     "ICPConfig": "icp",
+    "LocalMapConfig": "local_map",
+    "LocalMapRGBDBackend": "local_map",
     "SparseConfig": "sparse",
     "SparseRGBDBackend": "sparse",
 }

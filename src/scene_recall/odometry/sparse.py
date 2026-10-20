@@ -271,74 +271,81 @@ class SparseRGBDBackend:
         features_0 = self._features(source, calibration)
         features_1 = self._features(target, calibration)
         self._cached = (target, calibration, features_1)
-        descriptors_0, descriptors_1 = features_0.descriptors, features_1.descriptors
-        matches = []
-        ratio_count = 0
-        if descriptors_0 is not None and descriptors_1 is not None:
-            matcher = cv2.BFMatcher(cv2.NORM_L2)
-            neighbors = matcher.knnMatch(descriptors_0, descriptors_1, k=2)
+        return estimate_feature_pair(features_0, features_1, calibration, self.config)
+
+
+def estimate_feature_pair(
+    features_0: _Features,
+    features_1: _Features,
+    calibration: Calibration,
+    config: SparseConfig,
+) -> PairEstimate:
+    """Apply the unchanged sparse baseline to already extracted measurements."""
+    descriptors_0, descriptors_1 = features_0.descriptors, features_1.descriptors
+    matches = []
+    ratio_count = 0
+    if descriptors_0 is not None and descriptors_1 is not None:
+        matcher = cv2.BFMatcher(cv2.NORM_L2)
+        neighbors = matcher.knnMatch(descriptors_0, descriptors_1, k=2)
+        matches = [
+            row[0]
+            for row in neighbors
+            if len(row) == 2 and row[0].distance < config.ratio * row[1].distance
+        ]
+        ratio_count = len(matches)
+        if config.mutual_matching:
+            reverse = {
+                match.queryIdx: match.trainIdx
+                for match in matcher.match(descriptors_1, descriptors_0)
+            }
             matches = [
-                row[0]
-                for row in neighbors
-                if len(row) == 2
-                and row[0].distance < self.config.ratio * row[1].distance
+                match
+                for match in matches
+                if reverse.get(match.trainIdx) == match.queryIdx
             ]
-            ratio_count = len(matches)
-            if self.config.mutual_matching:
-                reverse = {
-                    match.queryIdx: match.trainIdx
-                    for match in matcher.match(descriptors_1, descriptors_0)
-                }
-                matches = [
-                    match
-                    for match in matches
-                    if reverse.get(match.trainIdx) == match.queryIdx
-                ]
-            # Keep one source per target even when mutual checking is disabled.
-            unique = {}
-            for match in sorted(
-                matches, key=lambda match: (match.distance, match.queryIdx)
-            ):
-                unique.setdefault(match.trainIdx, match)
-            matches = sorted(unique.values(), key=lambda match: match.queryIdx)
-        queries = np.array([match.queryIdx for match in matches], dtype=np.intp)
-        trains = np.array([match.trainIdx for match in matches], dtype=np.intp)
-        valid = np.isfinite(features_0.points_R[queries]).all(axis=1)
-        queries, trains = queries[valid], trains[valid]
-        points = features_0.points_R[queries]
-        pixels_1 = features_1.pixels[trains]
-        estimate = estimate_sparse_pose(points, pixels_1, calibration.K_R, self.config)
-        diagnostics = dict(estimate.diagnostics)
-        diagnostics.update(
-            source_keypoints=len(features_0.pixels),
-            target_keypoints=len(features_1.pixels),
-            ratio_matches=ratio_count,
-            unique_matches=len(matches),
-            depth_valid_matches=len(points),
+        # Keep one source per target even when mutual checking is disabled.
+        unique = {}
+        for match in sorted(
+            matches, key=lambda match: (match.distance, match.queryIdx)
+        ):
+            unique.setdefault(match.trainIdx, match)
+        matches = sorted(unique.values(), key=lambda match: match.queryIdx)
+    queries = np.array([match.queryIdx for match in matches], dtype=np.intp)
+    trains = np.array([match.trainIdx for match in matches], dtype=np.intp)
+    valid = np.isfinite(features_0.points_R[queries]).all(axis=1)
+    queries, trains = queries[valid], trains[valid]
+    points = features_0.points_R[queries]
+    pixels_1 = features_1.pixels[trains]
+    estimate = estimate_sparse_pose(points, pixels_1, calibration.K_R, config)
+    diagnostics = dict(estimate.diagnostics)
+    diagnostics.update(
+        source_keypoints=len(features_0.pixels),
+        target_keypoints=len(features_1.pixels),
+        ratio_matches=ratio_count,
+        unique_matches=len(matches),
+        depth_valid_matches=len(points),
+    )
+    pose_R = estimate.T_C1C0
+    reason = estimate.reason
+    if pose_R is not None:
+        inliers = (
+            reprojection_errors(points, pixels_1, calibration.K_R, pose_R)
+            <= config.reprojection_threshold_px
         )
-        pose_R = estimate.T_C1C0
-        reason = estimate.reason
-        if pose_R is not None:
-            inliers = (
-                reprojection_errors(points, pixels_1, calibration.K_R, pose_R)
-                <= self.config.reprojection_threshold_px
-            )
-            height, width = calibration.rgb_shape
-            coverage = []
-            for pixels in (features_0.pixels[queries][inliers], pixels_1[inliers]):
-                coverage.append(
-                    float(np.prod(np.ptp(pixels, axis=0)) / (height * width))
-                )
-            diagnostics.update(source_coverage=coverage[0], target_coverage=coverage[1])
-            if min(coverage) < self.config.min_coverage:
-                pose_R = None
-                reason = "low spatial coverage"
-        T_DR = np.linalg.inv(calibration.T_RD)
-        return PairEstimate(
-            None if pose_R is None else T_DR @ pose_R @ calibration.T_RD,
-            reason,
-            None
-            if estimate.initial_T_C1C0 is None
-            else T_DR @ estimate.initial_T_C1C0 @ calibration.T_RD,
-            diagnostics,
-        )
+        height, width = calibration.rgb_shape
+        coverage = []
+        for pixels in (features_0.pixels[queries][inliers], pixels_1[inliers]):
+            coverage.append(float(np.prod(np.ptp(pixels, axis=0)) / (height * width)))
+        diagnostics.update(source_coverage=coverage[0], target_coverage=coverage[1])
+        if min(coverage) < config.min_coverage:
+            pose_R = None
+            reason = "low spatial coverage"
+    T_DR = np.linalg.inv(calibration.T_RD)
+    return PairEstimate(
+        None if pose_R is None else T_DR @ pose_R @ calibration.T_RD,
+        reason,
+        None
+        if estimate.initial_T_C1C0 is None
+        else T_DR @ estimate.initial_T_C1C0 @ calibration.T_RD,
+        diagnostics,
+    )

@@ -17,6 +17,7 @@ from scene_recall.odometry.evaluation import evaluate_trajectory
 from scene_recall.odometry.hybrid import HybridConfig, HybridRGBDBackend
 from scene_recall.odometry.icp import DepthICPBackend, ICPConfig
 from scene_recall.odometry.io import save_run
+from scene_recall.odometry.local_map import LocalMapConfig, LocalMapRGBDBackend
 from scene_recall.odometry.pipeline import track_observations
 from scene_recall.odometry.sparse import SparseConfig, SparseRGBDBackend
 from scene_recall.run_metadata import code_hash
@@ -28,7 +29,7 @@ def run_odometry(
     *,
     dataset: str,
     backend_name: str,
-    config: SparseConfig | ICPConfig | HybridConfig,
+    config: SparseConfig | ICPConfig | HybridConfig | LocalMapConfig,
     start: int = 0,
     stop: int | None = None,
     tum_config: TUMConfig | None = None,
@@ -49,6 +50,7 @@ def run_odometry(
         "sparse": (SparseConfig, SparseRGBDBackend),
         "icp": (ICPConfig, DepthICPBackend),
         "hybrid": (HybridConfig, HybridRGBDBackend),
+        "local_map": (LocalMapConfig, LocalMapRGBDBackend),
     }
     if backend_name not in backends:
         raise ValueError("unsupported odometry backend")
@@ -113,6 +115,7 @@ def run_odometry(
             "sparse": "ransac",
             "icp": None,
             "hybrid": "accepted_sparse",
+            "local_map": None,
         }[backend_name],
         "config": asdict(config),
         "source": {

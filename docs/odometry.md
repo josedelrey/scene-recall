@@ -1,6 +1,6 @@
 # Selectable RGB-D odometry
 
-Three independently selectable backends consume canonical observations and
+Four independently selectable backends consume canonical observations and
 calibration through the same sequential tracker:
 
 | Backend | Initialization and objective | Failure behavior |
@@ -8,6 +8,7 @@ calibration through the same sequential tracker:
 | `sparse` | SIFT, matching, source depth, EPnP RANSAC, LM | Failed estimation or LM starts a new segment |
 | `icp` | Identity for each pair, independent multiscale depth point-to-plane ICP | Failed or unconverged geometry starts a new segment |
 | `hybrid` | Complete accepted sparse pose, followed by the same ICP | Sparse failure starts a segment, ICP failure explicitly retains sparse by default |
+| `local_map` | Experimental persistent keyframe landmarks, map-to-frame PnP and RGB-D consensus | Map rejection tries Sparse fallback, total failure resets the map and starts a segment |
 
 Sparse is the default.
 Dataset parsing stays in adapters. Reference poses are used only by evaluation.
@@ -40,9 +41,14 @@ evaluation = evaluate_trajectory(trajectory, intervals=(1, 5, 10))
 ```
 
 `PairwiseBackend.estimate(source, target, calibration)` is the extension point
-for all three estimators and future extensions. It returns `PairEstimate` with
+for these estimators and future extensions. It returns `PairEstimate` with
 a forward canonical depth-frame transform or an explicit failure. There is no backend registry or
 automatic estimator selection.
+
+The opt-in [incremental local-map frontend](local_map_tracking.md) owns bounded
+keyframes and persistent landmarks across calls. Use a fresh backend for each
+stream. Its returned relative transform encodes an absolute map fit in the
+current segment, preserving the existing trajectory and mapping interfaces.
 
 ## Sparse settings and quality checks
 

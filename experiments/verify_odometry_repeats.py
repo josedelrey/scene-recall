@@ -1,7 +1,8 @@
 """Verify repeated prefixes or clips against saved full odometry runs.
 
-Pair estimates must match exactly. Local trajectories in later clips must match
-after an estimated-pose coordinate change, without any reference alignment.
+Pairwise estimates must match exactly. Their trajectories in later clips must
+match after an estimated-pose coordinate change, without reference alignment.
+Stateful local-map runs require the same starting history and support prefixes.
 Optionally fingerprint source tables and every PNG for future reproduction.
 """
 
@@ -35,6 +36,10 @@ def verify_clip(full, repeat):
         if original["source"][key] != rerun["source"][key]:
             raise ValueError(f"repeat source differs: {key}")
     start = rerun["source"]["start"] - original["source"]["start"]
+    if original["backend"] == "local_map" and start != 0:
+        raise ValueError(
+            "local-map repeats require identical starting history, use a prefix"
+        )
     count = rerun["evaluation"]["frame_count"]
     exact = []
     with (

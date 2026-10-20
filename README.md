@@ -59,6 +59,7 @@ and mapping preserves those boundaries. Reference poses are used for diagnostics
 | ScanNet reading, point clouds and pair diagnostics | [ScanNet support](docs/scannet.md) |
 | TUM input, calibration and timestamp association | [TUM support](docs/tum.md) |
 | Backends, failure policy, exports and trajectory metrics | [RGB-D odometry](docs/odometry.md) |
+| Experimental incremental keyframes and persistent-map tracking | [Local-map tracking](docs/local_map_tracking.md) |
 | Persistent tracks, shared landmarks and covisibility | [Multiview measurements](docs/multiview_tracks.md) |
 | Bounded experimental pose-only refinement and map evaluation | [Pose-only multiview experiment](docs/pose_only_multiview.md) |
 | Opt-in shared-landmark refinement and matched temporal controls | [Local RGB-D BA experiment](docs/local_rgbd_ba.md) |

@@ -12,7 +12,7 @@ from PIL import Image
 from scene_recall.odometry.cli import main
 
 
-@pytest.mark.parametrize("backend", ["sparse", "icp", "hybrid"])
+@pytest.mark.parametrize("backend", ["sparse", "icp", "hybrid", "local_map"])
 def test_tum_cli_is_reproducible_and_reference_independent(
     tmp_path, monkeypatch, backend
 ):
