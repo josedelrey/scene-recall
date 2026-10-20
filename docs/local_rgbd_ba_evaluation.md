@@ -9,9 +9,8 @@ The [method and reproduction guide](local_rgbd_ba.md) gives the mathematical
 objective, Schur solver, gauge policy, safeguards and archive contracts.
 No existing backend, baseline artifact or mapping policy was replaced.
 
-The subsequent [batch multiview investigation](batch_multiview.md) tests longer
-point persistence and revisable camera history under a separate offline policy.
-It preserves the local experiment and all results below.
+For shared landmarks across a full segment, see the
+[offline batch refinement guide](batch_multiview.md).
 
 ## Protocol and available evidence
 

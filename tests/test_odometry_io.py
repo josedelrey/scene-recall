@@ -142,6 +142,7 @@ def test_existing_destinations_are_refused_without_modification(tmp_path, inputs
             if getattr(error, "winerror", None) == 1314:
                 pytest.skip("Windows symbolic-link privilege is unavailable")
             raise
+        original_link_target = output.readlink()
     with pytest.raises(ValueError, match="already exists"):
         run_io.save_run(output, rows, report, 5)
     if kind == "empty_directory":
@@ -149,7 +150,8 @@ def test_existing_destinations_are_refused_without_modification(tmp_path, inputs
     elif kind == "file":
         assert output.read_bytes() == b"preserve"
     else:
-        assert output.is_symlink() and output.readlink() == target
+        assert output.is_symlink()
+        assert output.readlink() == original_link_target
         if kind == "symlink":
             assert (target / "sentinel").read_bytes() == b"preserve"
         else:
