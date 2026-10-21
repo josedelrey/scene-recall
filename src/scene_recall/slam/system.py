@@ -24,6 +24,7 @@ from scene_recall.multiview.temporal import (
 from scene_recall.odometry.pipeline import PairEstimate
 from scene_recall.odometry.recent_map import RecentMapConfig, RecentMapRGBDBackend
 from scene_recall.slam.graph import marginalize_oldest, solve_window
+from scene_recall.slam.marginal import marginalize, prior_supports_camera
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,8 @@ class SLAMConfig:
     max_landmarks: int = 128
     exposure: str = "timed"
     optimize: bool = True
+    marginalization: str = "schur"
+    stale_keyframes: int = 0
     solver: BatchConfig = field(
         default_factory=lambda: BatchConfig(
             max_iterations=10,
@@ -54,6 +57,16 @@ class SLAMConfig:
                 raise ValueError(f"{name} must be an integer >= {lower}")
         if self.exposure not in ("timed", "static"):
             raise ValueError("exposure must be timed or static")
+        if self.marginalization not in ("schur", "sqrt"):
+            raise ValueError("marginalization must be schur or sqrt")
+        if (
+            isinstance(self.stale_keyframes, bool)
+            or not isinstance(self.stale_keyframes, int)
+            or self.stale_keyframes < 0
+        ):
+            raise ValueError("stale_keyframes must be a nonnegative integer")
+        if self.stale_keyframes and self.marginalization != "sqrt":
+            raise ValueError("point retirement requires square-root marginalization")
         if not isinstance(self.optimize, bool):
             raise TypeError("optimizer switches must be boolean")
         if not isinstance(self.solver, BatchConfig) or not isinstance(
@@ -128,6 +141,7 @@ class IncrementalSLAM:
     def _clear_graph(self):
         self.poses, self.transforms, self.packets = {}, {}, {}
         self.points, self.identities = {}, {}
+        self.last_seen = {}
         self.root_id, self.prior = None, None
 
     def _factors(self):
@@ -144,6 +158,8 @@ class IncrementalSLAM:
         return DirectFactors(**arrays)
 
     def _retire(self, K):
+        if self.config.marginalization == "sqrt":
+            return self._marginalize(K, cameras=(next(iter(self.poses)),))
         factors = self._factors()
         if factors is None:
             raise ValueError("no observations at lag boundary")
@@ -179,6 +195,7 @@ class IncrementalSLAM:
                 del self.packets[key]
         for track in retired:
             del self.points[int(track)]
+            self.last_seen.pop(int(track), None)
         self.identities = {
             identity: track
             for identity, track in self.identities.items()
@@ -189,6 +206,59 @@ class IncrementalSLAM:
             "retired_landmarks": len(retired),
             "prior_rank": len(prior.b),
         }
+
+    def _marginalize(self, K, *, cameras=(), tracks=()):
+        factors = self._factors()
+        prior, _, retired, diagnostic = marginalize(
+            np.array(list(self.poses.values())),
+            factors,
+            K,
+            list(self.poses),
+            self.root_id,
+            self.prior,
+            self.config.solver,
+            cameras=cameras,
+            tracks=tracks,
+        )
+        # Mutate only after successful elimination. Consumed factors cannot
+        # reappear in raw packets, even when their frontend identity returns.
+        self.prior = prior
+        for key in cameras:
+            del self.poses[key], self.transforms[key]
+            if key == self.root_id:
+                self.root_id = None
+        for key, packet in list(self.packets.items()):
+            mask = ~np.isin(packet.track_id, retired)
+            if key in cameras or not mask.any():
+                del self.packets[key]
+            else:
+                self.packets[key] = replace(
+                    packet,
+                    **{
+                        name: getattr(packet, name)[mask]
+                        for name in packet.__dataclass_fields__
+                    },
+                )
+        for track in retired:
+            del self.points[int(track)]
+            self.last_seen.pop(int(track), None)
+        self.identities = {
+            identity: track
+            for identity, track in self.identities.items()
+            if track in self.points
+        }
+        return diagnostic
+
+    def _retire_stale(self, key, K):
+        present = set(map(int, self.frontend.owners[key]))
+        for identity, track in self.identities.items():
+            if identity in present:
+                self.last_seen[track] = key
+        horizon = self.config.stale_keyframes * self.config.keyframe_interval
+        stale = [
+            track for track in self.points if key - self.last_seen[track] >= horizon
+        ]
+        return self._marginalize(K, tracks=stale) if stale else None
 
     def _ingest(self, observation, calibration, depth_pose, features, motion):
         samples = bind_depth(
@@ -240,6 +310,7 @@ class IncrementalSLAM:
                 self._next_track += 1
                 self.identities[identity] = track
                 self.points[track] = transform_points(samples.points_R[i], pose)
+                self.last_seen[track] = key
             ids.append(self.identities[identity])
         self.poses[key], self.transforms[key] = pose, samples.T_RcD
         if self.root_id is None and self.prior is None:
@@ -303,6 +374,14 @@ class IncrementalSLAM:
             else:
                 motion = PairMotion(np.eye(4), "no_segment_velocity", False)
             diagnostic["exposure_status"] = motion.status
+            if self.config.stale_keyframes and self.points:
+                try:
+                    diagnostic["point_marginalization"] = self._retire_stale(
+                        key, calibration.K_R
+                    )
+                except (ValueError, np.linalg.LinAlgError) as error:
+                    diagnostic["graph_restart"] = str(error)
+                    self._clear_graph()
             # A full point budget can outlive every track in the current view.
             # Camera-count eviction alone cannot advance such a stalled graph.
             if (
@@ -338,13 +417,20 @@ class IncrementalSLAM:
                 }
                 supported = np.array([counts[int(i)] >= 2 for i in factors.track_id])
                 adequate = all(
-                    int((supported & (factors.view == i)).sum())
-                    >= self.config.solver.min_observations
-                    and grid_coverage(
-                        factors.pixels[supported & (factors.view == i)],
-                        calibration.rgb_shape,
+                    (
+                        self.config.stale_keyframes
+                        and k != key
+                        and prior_supports_camera(self.prior, k)
                     )
-                    >= self.config.solver.min_grid_coverage
+                    or (
+                        int((supported & (factors.view == i)).sum())
+                        >= self.config.solver.min_observations
+                        and grid_coverage(
+                            factors.pixels[supported & (factors.view == i)],
+                            calibration.rgb_shape,
+                        )
+                        >= self.config.solver.min_grid_coverage
+                    )
                     for i, k in enumerate(keys)
                     if k != self.root_id
                 )

@@ -45,6 +45,8 @@ def variants():
         "axial": replace(native, solver=replace(native.solver, depth_model="axial")),
         "static": replace(native, exposure="static"),
         "wide": replace(native, window_size=16),
+        "sqrt": replace(native, marginalization="sqrt"),
+        "turnover": replace(native, marginalization="sqrt", stale_keyframes=2),
     }
 
 

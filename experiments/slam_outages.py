@@ -7,6 +7,7 @@ estimate natural tracking failure probabilities.
 
 import argparse
 import hashlib
+import inspect
 import json
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -25,15 +26,18 @@ from scene_recall.run_metadata import code_hash, sha256
 from scene_recall.slam.system import IncrementalSLAM, RevisionArchive, SLAMConfig
 
 
-def run(source, output):
+def run(source, output, *, configurations=None, engine_factory=IncrementalSLAM):
     if output.exists():
         raise ValueError("choose a fresh output directory")
     output.mkdir(parents=True)
     cv2.setNumThreads(1)
-    configurations = {"control": SLAMConfig(optimize=False), "native": SLAMConfig()}
+    configurations = configurations or {
+        "control": SLAMConfig(optimize=False),
+        "native": SLAMConfig(),
+    }
     scenarios = ("clean", "missing_depth", "black_rgb", "biased_depth")
     systems = {
-        (scenario, name): IncrementalSLAM(config)
+        (scenario, name): engine_factory(config)
         for scenario in scenarios
         for name, config in configurations.items()
     }
@@ -55,6 +59,8 @@ def run(source, output):
         "phase": "frozen before evaluation",
         "implementation": code_hash(),
         "driver_sha256": sha256(Path(__file__)),
+        "engine_factory": f"{engine_factory.__module__}.{engine_factory.__qualname__}",
+        "engine_factory_sha256": sha256(Path(inspect.getfile(engine_factory))),
         "feature_policy": "same original SIFT measurements, explicitly invalidated or rescaled by intervention",
     }
     (output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")

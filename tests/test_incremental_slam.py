@@ -225,8 +225,10 @@ def test_invalid_incremental_configuration(kwargs):
 
 
 @pytest.mark.parametrize("outage", ["none", "depth", "rgb"])
+@pytest.mark.parametrize("lifecycle", ["legacy", "turnover"])
 def test_stream_crosses_lag_boundaries_with_shared_landmarks_and_explicit_losses(
     outage,
+    lifecycle,
 ):
     calibration, tracks, samples, truth = scene(12, exact=True, skew=0)
     rng = np.random.default_rng(8)
@@ -255,7 +257,13 @@ def test_stream_crosses_lag_boundaries_with_shared_landmarks_and_explicit_losses
                 whitening_D=np.zeros((96, 3, 3)),
             )
     engine = IncrementalSLAM(
-        SLAMConfig(window_size=3, keyframe_interval=1, exposure="static")
+        SLAMConfig(
+            window_size=3,
+            keyframe_interval=1,
+            exposure="static",
+            marginalization="sqrt" if lifecycle == "turnover" else "schur",
+            stale_keyframes=2 if lifecycle == "turnover" else 0,
+        )
     )
     diagnostics, losses = [], []
     with (
@@ -367,7 +375,10 @@ def test_shared_uncertainty_and_hidden_depth_scale_counterexample(monkeypatch):
     assert bias["point_error_m"]["mean"] > 0.1
 
 
-def test_turnover_cannot_permanently_starve_a_full_landmark_budget(monkeypatch):
+@pytest.mark.parametrize("lifecycle", ["legacy", "turnover"])
+def test_turnover_cannot_permanently_starve_a_full_landmark_budget(
+    monkeypatch, lifecycle
+):
     from scene_recall.odometry.pipeline import PairEstimate
 
     calibration, tracks, samples, _ = scene(12, exact=True, skew=0)
@@ -402,7 +413,12 @@ def test_turnover_cannot_permanently_starve_a_full_landmark_budget(monkeypatch):
 
     engine = IncrementalSLAM(
         SLAMConfig(
-            window_size=3, keyframe_interval=1, max_landmarks=20, exposure="static"
+            window_size=3,
+            keyframe_interval=1,
+            max_landmarks=20,
+            exposure="static",
+            marginalization="sqrt" if lifecycle == "turnover" else "schur",
+            stale_keyframes=2 if lifecycle == "turnover" else 0,
         )
     )
     engine.frontend = TurnoverFrontend()
@@ -423,8 +439,13 @@ def test_turnover_cannot_permanently_starve_a_full_landmark_budget(monkeypatch):
         if "measurement_count" in diagnostic:
             admissions.append(i)
         assert len(engine.points) <= 20
-    assert admissions == [0, 3, 6, 9]
-    assert restarts == [3, 6, 9]
+    if lifecycle == "legacy":
+        assert admissions == [0, 3, 6, 9]
+        assert restarts == [3, 6, 9]
+    else:
+        assert admissions == [0, 2, 4, 6, 8, 10]
+        assert restarts == []
+        assert len(engine.last_seen) <= 20
     assert engine.segment_id == 0
 
 

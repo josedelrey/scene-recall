@@ -6,6 +6,11 @@ pose/landmark estimation, fixed-lag marginalization and explicit reconstruction
 invalidation. It does not yet implement place recognition, loop closure,
 inter-segment alignment or global relocalization.
 
+The follow-up [landmark lifecycle investigation](slam_landmark_lifecycle.md)
+adds opt-in square-root retirement, coupled point retirement and persistence
+selection experiments. Independent capture results remain mixed. Both Sparse
+and this document's original experimental defaults are preserved.
+
 ## Architecture and rationale
 
 The earlier frozen-map policies improved some motion measurements while harming
