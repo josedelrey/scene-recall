@@ -67,6 +67,7 @@ and mapping preserves those boundaries. Reference poses are used for diagnostics
 | Experimental incremental keyframes and persistent-map tracking | [Local-map tracking](docs/local_map_tracking.md) |
 | Revisable local poses, shared uncertainty and reconstruction invalidation | [Incremental SLAM experiment](docs/incremental_slam.md) |
 | Verified historical localization, explicit map gauges and ETH3D inputs | [Recovery atlas investigation](docs/slam_recovery.md) |
+| Experimental place retrieval, global loop correction and geometry validation | [Verified loop graph investigation](docs/slam_loop_graph.md) |
 | Persistent tracks, shared landmarks and covisibility | [Multiview measurements](docs/multiview_tracks.md) |
 | Bounded experimental pose-only refinement and map evaluation | [Pose-only multiview experiment](docs/pose_only_multiview.md) |
 | Opt-in shared-landmark refinement and matched temporal controls | [Local RGB-D BA experiment](docs/local_rgbd_ba.md) |

@@ -15,6 +15,7 @@ from scene_recall.features import RGBDFeatures
 from scene_recall.geometry.transforms import is_rigid
 from scene_recall.odometry.evaluation import pose_error
 from scene_recall.slam.registration import RegistrationConfig, register_anchor
+from scene_recall.slam.retrieval import descriptor_votes
 
 
 @dataclass(frozen=True)
@@ -25,11 +26,14 @@ class AtlasConfig:
     keyframe_stride: int = 5
     min_frame_gap: int = 10
     confirmation_query_frames: int = 0
+    retrieval: str = "mean"
     confirmation_translation_m: float = 0.05
     confirmation_rotation_deg: float = 3.0
     registration: RegistrationConfig = field(default_factory=RegistrationConfig)
 
     def __post_init__(self):
+        if self.retrieval not in ("mean", "descriptor_votes"):
+            raise ValueError("unsupported atlas retrieval")
         for name in (
             "max_entries",
             "recent_entries",
@@ -275,6 +279,22 @@ class SubmapAtlas:
                 if frame - key >= self.config.min_frame_gap
                 and self.frames[key][0] != segment
             ]
+            if self.config.retrieval == "descriptor_votes":
+                candidates = [
+                    (
+                        priority,
+                        (-metric, -matches, distance),
+                        key,
+                    )
+                    for priority, distance, key in candidates
+                    for metric, matches in [
+                        descriptor_votes(
+                            self.entries[key][0],
+                            features,
+                            self.config.registration.ratio,
+                        )
+                    ]
+                ]
             verified = []
             for _, _, source in sorted(candidates)[: self.config.candidates]:
                 registered = register_anchor(

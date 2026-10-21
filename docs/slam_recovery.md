@@ -395,6 +395,12 @@ Lab references are derived from SfM and are not independent motion capture.
 
 ## Architectural priorities
 
+The follow-up [verified loop graph investigation](slam_loop_graph.md) implements
+an optional descriptor-vote retriever and a separate revisable metric keyframe
+graph. It evaluates both genuine spatial corrections and failures across the
+same recordings, with explicit false-cycle controls and reconstruction rebuilding.
+The original forest and local tracking defaults described here remain unchanged.
+
 Historical localization and explicit map relationships are useful foundations
 for persistent spatial memory even when local BA remains unreliable. Surface
 fragments and future object observations should retain source-frame lineage and
@@ -432,9 +438,10 @@ The next development priorities depend on the measured bottleneck:
    appearance. Semantic descriptors can aid retrieval, while observation lineage
    and geometric verification remain necessary for spatial memory.
 
-These directions are architectural inferences from the experiments. Learned
-retrieval, dynamic-object modeling, inertial fusion, loop optimization, calibrated
-uncertainty, cross-session memory, and production recovery are not implemented.
+These directions are architectural inferences from the experiments. The separate
+follow-up now supplies experimental loop optimization. Learned retrieval,
+dynamic-object modeling, inertial fusion, calibrated uncertainty, cross-session
+memory, and production recovery remain unimplemented.
 
 The broader literature suggests three useful controlled next comparisons:
 

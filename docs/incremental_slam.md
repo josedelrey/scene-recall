@@ -10,6 +10,9 @@ invalidation. Its local estimator does not perform global relocalization or
 loop optimization. The separate opt-in [recovery atlas](slam_recovery.md) adds
 historical retrieval, verified inter-segment alignment, and explicit component
 gauges while preserving local tracking losses and these original defaults.
+The subsequent [loop graph investigation](slam_loop_graph.md) supplies a separate
+offline global correction experiment with explicit geometry and reconstruction
+validation. It does not change this local estimator's tracking defaults.
 
 The follow-up [landmark lifecycle investigation](slam_landmark_lifecycle.md)
 adds opt-in square-root retirement, coupled point retirement and persistence
