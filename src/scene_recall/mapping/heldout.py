@@ -289,7 +289,15 @@ def run_heldout(
         report, frames = load_trajectory(run)
         name = report["backend"]
         if (
-            name not in ("sparse", "hybrid", "icp", "local_map", "local_map_recent")
+            name
+            not in (
+                "sparse",
+                "hybrid",
+                "icp",
+                "local_map",
+                "local_map_recent",
+                "incremental_slam",
+            )
             or name in loaded
         ):
             raise ValueError("provide distinct supported odometry backends")
