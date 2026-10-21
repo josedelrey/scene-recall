@@ -1,5 +1,8 @@
 # Experimental incremental SLAM
 
+Historical local outputs were [compacted into evidence archives](output_storage.md).
+Restore the required reports and traces before using the saved-run examples below.
+
 Sparse remains the default. `scene_recall.slam` is an opt-in research foundation
 for revisable local SLAM. It combines online visual identity tracking, joint
 pose/landmark estimation, fixed-lag marginalization and explicit reconstruction
@@ -10,6 +13,11 @@ The follow-up [landmark lifecycle investigation](slam_landmark_lifecycle.md)
 adds opt-in square-root retirement, coupled point retirement and persistence
 selection experiments. Independent capture results remain mixed. Both Sparse
 and this document's original experimental defaults are preserved.
+
+The broader [system investigation](slam_system_investigation.md) separates
+observability, measurement prediction, finite observation budgets and full-rate
+pose output. It adds controlled sensor interventions and offline component and
+interpolation experiments while preserving these baselines.
 
 ## Architecture and rationale
 
@@ -439,11 +447,12 @@ reference algebra. Larger windows have not been validated on the new scene.
 ### Reproducibility and retained evidence
 
 `evidence_manifest.json` hashes the curated scientific artifacts and records
-final case selection and verification scope. Ignored `outputs/incremental_slam/`
-retains the fixed protocols, downloaded-source
-manifest, raw measurement archives, emitted and final poses, revisions, map
-predictions and paired summaries. `matrix/` and `independent/` are authoritative
-short-window runs. `full_sequences/xyz/` remains the full XYZ result.
+final case selection and verification scope. Historical `outputs/incremental_slam/`
+contained fixed protocols, a downloaded-source manifest, raw measurement archives,
+emitted and final poses, revisions, map predictions and paired summaries.
+The [storage capsule](output_storage.md) retains the compact evidence, while map
+predictions, feature caches and dataset images require regeneration. `matrix/`
+and `independent/` are authoritative short-window runs. `full_sequences/xyz/` remains the full XYZ result.
 `lifecycle_verified/{desk,rpy}/` replaces the full Desk/RPY prototypes.
 The full-sequence summary uses those replacements explicitly.
 `outages_release/` contains the final-code intervention replay.
@@ -452,8 +461,8 @@ The full-sequence summary uses those replacements explicitly.
 camera-only solver and the uncorrected full Desk/RPY runs are excluded from
 promotion evidence.
 
-All 1,927 protected older scientific files remain unchanged. Fresh budget-Sparse
-runs reproduce every archive array on full Desk, full RPY and an 80-frame XYZ
+Before output compaction, all 1,927 protected older scientific files were
+unchanged. Fresh budget-Sparse runs reproduce every archive array on full Desk, full RPY and an 80-frame XYZ
 prefix. All four policy raw/cached repeats match final and emitted poses,
 measurement arrays, evaluations and non-timing diagnostics exactly. Their
 80 emitted poses equal the full XYZ prefix, and the first 40 sealed final poses

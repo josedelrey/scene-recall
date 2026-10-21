@@ -20,6 +20,10 @@ Keep datasets outside Git, using the ignored `data/` directory or an external
 path. Store generated artifacts in ignored `outputs/`. Commands run from the
 repository root and use fresh output directories.
 
+Historical outputs may be stored as compact evidence archives. See
+[output storage and recovery](docs/output_storage.md) for retained files,
+dataset requirements and cleanup commands.
+
 ```bash
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 uv run --locked python \
   scripts/rgbd_odometry.py \

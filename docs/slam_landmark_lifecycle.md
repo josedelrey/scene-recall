@@ -1,5 +1,8 @@
 # Incremental SLAM landmark lifecycle investigation
 
+Historical local outputs were [compacted into evidence archives](output_storage.md).
+Restore the required reports and traces before using the saved-run examples below.
+
 The [initial incremental SLAM study](incremental_slam.md) remains the baseline.
 This follow-up investigates landmark capacity, rank-deficient retirement and
 measurement persistence. Sparse remains the production default. The original
@@ -259,7 +262,8 @@ emitted poses and measurement archives reproduce exactly. New persistence runs
 match raw/cached trajectories, measurements and non-timing diagnostics exactly,
 including emitted prefix 80 and sealed prefix 40 against full XYZ. No-optimizer
 turnover equals the matched no-optimizer control exactly. All 2,092 earlier
-incremental-study files and 1,927 older protected scientific files are unchanged.
+incremental-study files and 1,927 older protected scientific files were unchanged
+before output compaction.
 Dependencies, lockfile and defaults are unchanged. Native Windows and hosted CI
 were not run.
 
@@ -300,8 +304,10 @@ with the same baseline and `--case-root`, a fresh `--output-dir` and the selecte
 the full XYZ update audit. Outage controls use `outages SOURCE OUTPUT`, with
 `--persistent` for the two persistence candidates.
 
-Ignored evidence lives under `outputs/slam_lifecycle/`. The initial and subsequent
-persistence protocols, case manifests, archive/table hashes, paired controls,
+Compact evidence for historical `outputs/slam_lifecycle/` now lives in
+`outputs/evidence/slam_lifecycle.tar.xz`. Dataset images, feature caches and
+geometry require regeneration as described in the [storage guide](output_storage.md).
+The initial and subsequent persistence protocols, case manifests, archive/table hashes, paired controls,
 raw/cached repeats and preserved-baseline audit accompany the results. The
 `development/` runs changed source during execution and were rejected by the
 driver. The first `persistence/` attempt failed on an empty selection. These
