@@ -1,6 +1,8 @@
 """Verified evidence survives destructive output compaction."""
 
+import os
 import runpy
+import stat
 import tarfile
 from pathlib import Path
 
@@ -44,6 +46,21 @@ def test_snapshot_does_not_mutate_files(tmp_path):
     before = {p: p.read_bytes() for p in case.iterdir()}
     assert len(snapshot(root)) == 5
     assert all(p.read_bytes() == content for p, content in before.items())
+
+
+def test_compaction_flushes_files_with_write_access(tmp_path, monkeypatch):
+    root, _ = inputs(tmp_path)
+    fsync = os.fsync
+
+    def require_write_access(descriptor):
+        if stat.S_ISREG(os.fstat(descriptor).st_mode):
+            # A zero-byte write checks access without changing the evidence.
+            # Windows requires write access when flushing file buffers.
+            os.write(descriptor, b"")
+        fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", require_write_access)
+    assert compact(root)["status"] == "originals removed after archive verification"
 
 
 def test_archive_verification_failure_cannot_delete_originals(tmp_path, monkeypatch):

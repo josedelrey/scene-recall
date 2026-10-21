@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+from scene_recall.datasets.tum import TUMConfig
 from scene_recall.features import extract_rgbd_features
 from scene_recall.odometry.runner import run_odometry
 from scene_recall.odometry.sparse import SparseConfig
@@ -15,9 +16,13 @@ from scene_recall.run_metadata import sha256
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tum-path", type=Path, required=True)
+    parser.add_argument("--tum-path", "--sequence-path", type=Path, required=True)
+    parser.add_argument(
+        "--dataset", choices=("tum_rgbd", "eth3d_slam"), default="tum_rgbd"
+    )
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--stop", type=int, required=True)
+    parser.add_argument("--max-reference-bracket-s", type=float, default=0.05)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
     if args.output_dir.exists():
@@ -44,12 +49,15 @@ def main():
         run_odometry(
             args.tum_path,
             args.output_dir / "budget",
-            dataset="tum_rgbd",
+            dataset=args.dataset,
             backend_name="sparse",
             config=SparseConfig(max_features=1500),
             start=args.start,
             stop=args.stop,
             rpe_intervals=(1, 5, 10, 20, 50, 100),
+            tum_config=TUMConfig(
+                max_ground_truth_difference_s=args.max_reference_bracket_s
+            ),
         )
     features = args.output_dir / "features.npz"
     np.savez_compressed(

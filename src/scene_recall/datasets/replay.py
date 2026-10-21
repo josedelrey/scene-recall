@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
+from scene_recall.datasets.eth3d import ETH3DReader
 from scene_recall.datasets.scannet import ScanNetReader
 from scene_recall.datasets.tum import TUMConfig, TUMReader
 
@@ -22,6 +23,10 @@ def open_source(odometry: dict, source_override: Path | None = None):
         )
     elif source["dataset"] == "scannet_v2":
         reader = ScanNetReader(source_path, **reader_args)
+    elif source["dataset"] == "eth3d_slam":
+        reader = ETH3DReader(
+            source_path, config=TUMConfig(**source["association_config"]), **reader_args
+        )
     else:
         raise ValueError("unsupported odometry dataset")
     return reader, source_path

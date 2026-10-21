@@ -1,4 +1,4 @@
-"""Run selectable RGB-D odometry and reference evaluation on ScanNet or TUM."""
+"""Run selectable RGB-D odometry on ScanNet, TUM or processed ETH3D."""
 
 import argparse
 import sys
@@ -20,6 +20,7 @@ def main() -> None:
     sources = parser.add_mutually_exclusive_group(required=True)
     sources.add_argument("--sens-path", type=Path)
     sources.add_argument("--tum-path", type=Path)
+    sources.add_argument("--eth3d-path", type=Path)
     parser.add_argument("--tum-max-rgb-depth-difference-s", type=float, default=0.02)
     parser.add_argument("--tum-max-ground-truth-difference-s", type=float, default=0.05)
     parser.add_argument(
@@ -149,9 +150,13 @@ def main() -> None:
         parser.error(str(error))
     try:
         run_odometry(
-            args.sens_path or args.tum_path,
+            args.sens_path or args.tum_path or args.eth3d_path,
             args.output_dir,
-            dataset="scannet_v2" if args.sens_path else "tum_rgbd",
+            dataset="scannet_v2"
+            if args.sens_path
+            else "eth3d_slam"
+            if args.eth3d_path
+            else "tum_rgbd",
             backend_name=args.backend,
             config=config,
             start=args.start,

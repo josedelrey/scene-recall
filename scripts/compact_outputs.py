@@ -129,7 +129,8 @@ def compact(root):
                     with path.open("rb") as stream:
                         archive.addfile(info, stream)
             verify_archive(target, {r["path"]: r["sha256"] for r in members})
-            with target.open("rb") as stream:
+            # Windows requires write access to flush file buffers.
+            with target.open("r+b") as stream:
                 os.fsync(stream.fileno())
             archives[name] = {
                 "sha256": digest(target),
@@ -162,7 +163,7 @@ def compact(root):
         }
         (capsule / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         for path in (inventory, capsule / "manifest.json"):
-            with path.open("rb") as stream:
+            with path.open("r+b") as stream:
                 os.fsync(stream.fileno())
         sync_directory(capsule)
         # Check the complete snapshot before the first unlink. Hard-link ctimes
@@ -185,7 +186,7 @@ def compact(root):
         manifest["status"] = "originals removed after archive verification"
         receipt = root / "evidence/manifest.json"
         receipt.write_text(json.dumps(manifest, indent=2) + "\n")
-        with receipt.open("rb") as stream:
+        with receipt.open("r+b") as stream:
             os.fsync(stream.fileno())
     return manifest
 

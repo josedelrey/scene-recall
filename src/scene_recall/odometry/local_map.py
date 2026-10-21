@@ -196,6 +196,12 @@ class LocalMapRGBDBackend:
     def _accept_features(self, index, features, matches):
         """Extension point for a frontend retaining temporal feature identities."""
 
+    def _recover_pose(
+        self, source_features, target_features, calibration, previous_pose
+    ):
+        """Optional reference-free recovery after both existing estimators abstain."""
+        return None, {}
+
     def _estimate_map(self, features, calibration, matches):
         diagnostics = {"map_matches": len(matches)}
         if not matches:
@@ -372,6 +378,24 @@ class LocalMapRGBDBackend:
             if fallback.T_C1C0 is not None:
                 pose = previous_pose @ np.linalg.inv(fallback.T_C1C0)
                 mode = "pairwise_fallback"
+                if proposals:
+                    _, indices = np.array(proposals).T
+                    selected = self._consensus(
+                        self._tracking_points(proposals, calibration),
+                        features.pixels[indices],
+                        features.points_R[indices],
+                        calibration.T_RD @ np.linalg.inv(pose),
+                        calibration.K_R,
+                    )
+                    matches = [proposals[i] for i in np.flatnonzero(selected)]
+        if pose is None:
+            pose, recovery = self._recover_pose(
+                self._previous[1], features, calibration, previous_pose
+            )
+            if recovery:
+                diagnostics["recovery"] = recovery
+            if pose is not None:
+                mode = "rgbd_recovery"
                 if proposals:
                     _, indices = np.array(proposals).T
                     selected = self._consensus(

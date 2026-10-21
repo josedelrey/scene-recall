@@ -11,6 +11,7 @@ from time import perf_counter
 import cv2
 import numpy as np
 
+from scene_recall.datasets.eth3d import ETH3DReader
 from scene_recall.datasets.scannet import ScanNetReader
 from scene_recall.datasets.tum import TUMConfig, TUMReader
 from scene_recall.odometry.evaluation import evaluate_trajectory
@@ -45,7 +46,7 @@ def run_odometry(
     an unrelated process command line. Dataset and backend names use the saved
     report identifiers. The backend configuration must match the selected name.
     """
-    if dataset not in ("scannet_v2", "tum_rgbd"):
+    if dataset not in ("scannet_v2", "tum_rgbd", "eth3d_slam"):
         raise ValueError("unsupported odometry dataset")
     backends = {
         "sparse": (SparseConfig, SparseRGBDBackend),
@@ -75,7 +76,9 @@ def run_odometry(
     reader_factory = (
         ScanNetReader(source, start=start, stop=stop)
         if dataset == "scannet_v2"
-        else TUMReader(source, start=start, stop=stop, config=tum_config)
+        else (ETH3DReader if dataset == "eth3d_slam" else TUMReader)(
+            source, start=start, stop=stop, config=tum_config
+        )
     )
     input_digest = hashlib.sha256()
     provenance = []
