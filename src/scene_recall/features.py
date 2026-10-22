@@ -49,6 +49,8 @@ def extract_rgbd_features(
     calibration: Calibration,
     sift,
     depth_edge_threshold_m: float | None = 0.05,
+    *,
+    contrast: str = "raw",
 ) -> RGBDFeatures:
     """Extract SIFT and sample depth with the Sparse VO visibility policy.
 
@@ -61,9 +63,12 @@ def extract_rgbd_features(
         raise ValueError("RGB shape must match calibration")
     if observation.depth.shape != calibration.depth_shape:
         raise ValueError("depth shape must match calibration")
-    keypoints, descriptors = sift.detectAndCompute(
-        cv2.cvtColor(observation.rgb, cv2.COLOR_RGB2GRAY), None
-    )
+    if contrast not in ("raw", "clahe"):
+        raise ValueError("unsupported feature contrast mode")
+    gray = cv2.cvtColor(observation.rgb, cv2.COLOR_RGB2GRAY)
+    if contrast == "clahe":
+        gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+    keypoints, descriptors = sift.detectAndCompute(gray, None)
     pixels = np.array(
         [keypoint.pt for keypoint in keypoints], dtype=np.float64
     ).reshape(-1, 2)

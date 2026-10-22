@@ -13,6 +13,7 @@ import numpy as np
 from scene_recall.geometry.transforms import is_rigid
 from scene_recall.multiview.pose_only import retract, skew
 from scene_recall.slam.graph import pose_chart
+from scene_recall.slam.linear import BlockSystem
 
 
 @dataclass(frozen=True)
@@ -25,8 +26,11 @@ class PoseGraphConfig:
     max_iterations: int = 20
     reject_weight: float = 0.1
     max_nodes: int = 512
+    linear_solver: str = "dense"
 
     def __post_init__(self):
+        if self.linear_solver not in ("dense", "block_pcg"):
+            raise ValueError("unsupported graph linear solver")
         for name in (
             "odometry_translation_m",
             "odometry_rotation_deg",
@@ -204,7 +208,13 @@ class MetricPoseGraph:
         damping = 1e-4
 
         def system(current, cutoff, linearize=False):
-            H = np.zeros((6 * len(free), 6 * len(free))) if linearize else None
+            H = None
+            if linearize:
+                H = (
+                    BlockSystem(6 * len(free))
+                    if self.config.linear_solver == "block_pcg"
+                    else np.zeros((6 * len(free), 6 * len(free)))
+                )
             g = np.zeros(6 * len(free)) if linearize else None
             cost, weights = 0.0, []
             for edge, scale in zip(edges, scales, strict=True):
@@ -245,7 +255,11 @@ class MetricPoseGraph:
                 for a, A in blocks:
                     g[a] += weight * A.T @ r
                     for b, B in blocks:
-                        H[a, b] += weight * A.T @ B
+                        value = weight * A.T @ B
+                        if isinstance(H, BlockSystem):
+                            H.add(a, b, value)
+                        else:
+                            H[a, b] += value
             return cost, weights, H, g
 
         initial = system(poses, self.config.robust_scale)[0]
@@ -256,9 +270,12 @@ class MetricPoseGraph:
                 cost, _, H, g = system(poses, cutoff, True)
                 if not free or np.linalg.norm(g, ord=np.inf) < 1e-7:
                     break
-                diagonal = np.maximum(np.diag(H), 1e-8)
                 try:
-                    delta = np.linalg.solve(H + damping * np.diag(diagonal), -g)
+                    if isinstance(H, BlockSystem):
+                        delta = H.solve(-g, damping)
+                    else:
+                        diagonal = np.maximum(np.diag(H), 1e-8)
+                        delta = np.linalg.solve(H + damping * np.diag(diagonal), -g)
                 except np.linalg.LinAlgError:
                     damping *= 10
                     continue

@@ -8,6 +8,7 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 data/
+local_inputs/
 outputs/
 
 # Editor and OS files
