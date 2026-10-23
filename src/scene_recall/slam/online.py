@@ -6,7 +6,7 @@ process call publishes a coherent trajectory and reconstruction version using
 only observations received so far. There is no end-of-sequence optimization.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from time import perf_counter
 
 import numpy as np
@@ -15,6 +15,7 @@ from scene_recall.features import RGBDFeatures
 from scene_recall.geometry.transforms import is_rigid
 from scene_recall.slam.atlas import AtlasConfig, appearance_signature
 from scene_recall.slam.loop_confirmation import LoopConfirmation
+from scene_recall.slam.multiview_registration import register_multiview
 from scene_recall.slam.pose_graph import MetricPoseGraph, PoseGraphConfig
 from scene_recall.slam.reconstruction import RevisionReconstruction
 from scene_recall.slam.recovery import RecoveryFrontend
@@ -41,8 +42,14 @@ class OnlineConfig:
     contrast: str = "raw"
     flow_recovery: bool = False
     feature_scale: float = 1.0
+    metric_refinement: bool = False
+    incremental_mapping: bool = False
+    multiview_registration: bool = False
+    multiview_scope: str = "all"
 
     def __post_init__(self):
+        if self.multiview_scope not in ("all", "loops"):
+            raise ValueError("multiview scope must be all or loops")
         if self.feature_scale not in (1.0, 0.5) or isinstance(self.feature_scale, bool):
             raise ValueError("feature scale must be 1.0 or 0.5")
         if self.contrast not in ("raw", "clahe"):
@@ -59,7 +66,14 @@ class OnlineConfig:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
-        for name in ("recovery", "loops", "flow_recovery"):
+        for name in (
+            "recovery",
+            "loops",
+            "flow_recovery",
+            "metric_refinement",
+            "incremental_mapping",
+            "multiview_registration",
+        ):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"{name} must be boolean")
         if not isinstance(self.local, SLAMConfig) or not isinstance(
@@ -101,6 +115,15 @@ class OnlineSLAM:
     ):
         self.calibration = calibration
         self.config = config or OnlineConfig()
+        self.registration = replace(
+            self.config.atlas.registration,
+            metric_refinement=(
+                self.config.metric_refinement
+                or self.config.atlas.registration.metric_refinement
+            ),
+        )
+        if self.config.multiview_registration and self.registration.metric_refinement:
+            raise ValueError("select one registration refinement")
         self.local = IncrementalSLAM(self.config.local)
         frontend = RecoveryFrontend(
             self.local.frontend.config,
@@ -109,6 +132,11 @@ class OnlineSLAM:
             contrast=self.config.contrast,
             flow=self.config.flow_recovery,
             feature_scale=self.config.feature_scale,
+            registration=self.registration,
+            multiview=(
+                self.config.multiview_registration
+                and self.config.multiview_scope == "all"
+            ),
             feature_extractor=feature_extractor,
         )
         frontend.recovery_enabled = self.config.recovery
@@ -117,7 +145,9 @@ class OnlineSLAM:
         self.graph = MetricPoseGraph(self.config.graph)
         self.confirmation = LoopConfirmation()
         self.reconstruction = (
-            RevisionReconstruction(calibration, mapping)
+            RevisionReconstruction(
+                calibration, mapping, incremental=self.config.incremental_mapping
+            )
             if mapping is not None
             else None
         )
@@ -127,6 +157,47 @@ class OnlineSLAM:
         self.version = 0
         self.pending_solve, self.last_solve = False, -self.config.solve_interval
         self.events = []
+        self.conditioning = {}
+
+    def _relative_context(self, source, context):
+        return (
+            self.calibration.T_RD
+            @ np.linalg.inv(self.archive.poses[context])
+            @ self.archive.poses[source]
+            @ np.linalg.inv(self.calibration.T_RD)
+        )
+
+    def _invalidate_conditioning(self):
+        """Remove derived constraints whose historical geometry has changed.
+
+        Native pair registrations remain immutable. Conditional registrations
+        require raw re-verification after a local revision. Retaining a stale
+        derived transform would hide its dependence on the revised estimator.
+        """
+        events, revoked = [], False
+        for (source, target), (context, frozen) in list(self.conditioning.items()):
+            current = self._relative_context(source, context)
+            if np.allclose(current, frozen, atol=1e-12, rtol=0):
+                continue
+            if (source, target) in self.graph.edges:
+                self.graph.revoke(source, target, "historical conditioning revised")
+                revoked = True
+            del self.conditioning[source, target]
+            events.append(
+                {
+                    "status": "conditioning_invalidated",
+                    "source": source,
+                    "target": target,
+                    "context": context,
+                    "verification": {
+                        "method": "conditioning_dependency",
+                        "status": "invalidated",
+                    },
+                }
+            )
+        if events:
+            self.confirmation = LoopConfirmation()
+        return events, revoked
 
     def _node(self, frame, segment, pose):
         if len(self.graph.local) >= self.config.graph.max_nodes:
@@ -204,8 +275,33 @@ class OnlineSLAM:
                 self.bank[source][0],
                 features,
                 self.calibration,
-                self.config.atlas.registration,
+                self.registration,
             )
+            if (
+                self.config.multiview_registration
+                and result.T_target_source is not None
+            ):
+                contexts = []
+                for key in sorted(self.bank, key=lambda key: (abs(key - source), key)):
+                    if (
+                        key == source
+                        or self.graph.segments[key] != self.graph.segments[source]
+                    ):
+                        continue
+                    relative = self._relative_context(source, key)
+                    if np.linalg.norm(relative[:3, 3]) < 0.02:
+                        continue
+                    contexts.append((key, self.bank[key][0], relative))
+                    if len(contexts) == 3:
+                        break
+                result = register_multiview(
+                    self.bank[source][0],
+                    features,
+                    contexts,
+                    self.calibration,
+                    self.registration,
+                    initial=result,
+                )
             event = {
                 "source": source,
                 "target": frame,
@@ -214,6 +310,11 @@ class OnlineSLAM:
             if result.T_target_source is None:
                 events.append({**event, "status": "registration_rejected"})
                 continue
+            if result.diagnostics.get("method") == "conditional_three_view_bundle":
+                context = result.diagnostics["context"]
+                frozen = self._relative_context(source, context)
+                self.conditioning[source, frame] = context, frozen.copy()
+                result.diagnostics["conditioning_transform"] = frozen.tolist()
             transform = (
                 np.linalg.inv(self.calibration.T_RD)
                 @ result.T_target_source
@@ -275,6 +376,12 @@ class OnlineSLAM:
             group: value
             for group, value in self.confirmation.pending.items()
             if value[0][0] in self.bank
+        }
+        retained = set(self.graph.edges)
+        for collection in (self.confirmation.pending, self.confirmation.confirmed):
+            retained.update(value[0][:2] for value in collection.values())
+        self.conditioning = {
+            key: value for key, value in self.conditioning.items() if key in retained
         }
 
     def _solve(self):
@@ -358,19 +465,22 @@ class OnlineSLAM:
             self.pending_solve |= any(
                 edge.kind == "loop" for edge in self.graph.edges.values()
             )
+        invalidations, force_solve = self._invalidate_conditioning()
         node = boundary or frame % self.config.atlas.keyframe_stride == 0
         admitted = node and self._node(frame, segment, self.archive.poses[frame])
         self.anchors.append(self.segment_nodes.get(segment))
         features = self.local.frontend._previous[1]
-        events = []
+        events = invalidations
         query_start = perf_counter()
         if admitted:
             if self.config.loops:
-                events = self._recognize(frame, segment, features)
+                events.extend(self._recognize(frame, segment, features))
             self._remember(frame, features)
         diagnostic["place_seconds"] = perf_counter() - query_start
         diagnostic["graph"] = None
-        if self.pending_solve and frame - self.last_solve >= self.config.solve_interval:
+        if force_solve or (
+            self.pending_solve and frame - self.last_solve >= self.config.solve_interval
+        ):
             solve_start = perf_counter()
             diagnostic["graph"] = self._solve()
             diagnostic["graph"]["seconds"] = perf_counter() - solve_start
@@ -415,6 +525,7 @@ class OnlineSLAM:
     def revoke(self, source, target, reason):
         """Revoke a raw loop and publish disconnection before accepting more data."""
         self.graph.revoke(source, target, reason)
+        self.conditioning.pop((source, target), None)
         self.confirmation = LoopConfirmation()
         diagnostic = self._solve()
         dirty = self._publish()

@@ -364,3 +364,7 @@ tracking continues. Persistent map storage, asynchronous bounded scheduling,
 incremental factorization and stronger learned historical association remain
 future work. Any promotion must account for accuracy, map quality and worst-case
 latency alongside tracking availability.
+
+The [metric estimation follow-up](online_metric_estimation.md) investigates
+two-observation uncertainty, recovery/global ablations and transactional
+incremental fusion with exact-output checks.

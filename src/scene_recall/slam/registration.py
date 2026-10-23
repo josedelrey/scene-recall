@@ -16,6 +16,7 @@ from scene_recall.multiview.diagnostics import grid_coverage
 from scene_recall.multiview.tracking import match_descriptors
 from scene_recall.odometry.local_map import information_ratio
 from scene_recall.odometry.sparse import SparseConfig, estimate_sparse_pose
+from scene_recall.slam.metric_refinement import refine_metric_pose
 
 
 @dataclass(frozen=True)
@@ -32,8 +33,11 @@ class RegistrationConfig:
     reprojection_px: float = 3.0
     max_trials: int = 256
     seed: int = 0
+    metric_refinement: bool = False
 
     def __post_init__(self):
+        if not isinstance(self.metric_refinement, bool):
+            raise TypeError("metric_refinement must be boolean")
         for name, lower in (
             ("min_pairs", 12),
             ("min_fit", 3),
@@ -302,6 +306,20 @@ def register_anchor_pairs(first, second, pairs, calibration, config=None):
     if result.T_C1C0 is None:
         return rejected("anchor PnP " + result.reason)
     pose = result.T_C1C0
+    if config.metric_refinement:
+        # Select on fitting rows only. Withheld rows never tune the optimizer.
+        prediction = transform_points(a[fit], pose)
+        finite = np.isfinite(b[fit]).all(axis=1)
+        limits_fit = config.depth_absolute_m + config.depth_relative * np.where(
+            finite, b[fit, 2], 0
+        )
+        selected_fit = fit[
+            finite & (np.linalg.norm(prediction - b[fit], axis=1) <= limits_fit)
+        ]
+        pose, refinement = refine_metric_pose(
+            a[selected_fit], b[selected_fit], calibration.K_R, pose
+        )
+        diagnostic["metric_refinement"] = refinement
     projected = transform_points(a, pose)
     errors = np.linalg.norm(
         project_points(projected, calibration.K_R) - second.pixels[t], axis=1

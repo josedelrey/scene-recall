@@ -14,7 +14,9 @@ from scene_recall.features import RGBDFeatures, sample_native_depth
 from scene_recall.slam.registration import Registration, register_anchor_pairs
 
 
-def flow_registration(source, target, calibration, *, contrast="raw"):
+def flow_registration(
+    source, target, calibration, *, contrast="raw", registration=None
+):
     """Propose at most 1,000 native corners and verify a frozen PnP estimate."""
     if target.frame_index != source.frame_index + 1:
         raise ValueError("flow requires consecutive observations")
@@ -78,5 +80,5 @@ def flow_registration(source, target, calibration, *, contrast="raw"):
         for observation, pixels in ((source, a), (target, b))
     ]
     pairs = np.repeat(np.arange(len(a))[:, None], 2, axis=1)
-    result = register_anchor_pairs(first, second, pairs, calibration)
+    result = register_anchor_pairs(first, second, pairs, calibration, registration)
     return replace(result, diagnostics={**result.diagnostics, **diagnostic})

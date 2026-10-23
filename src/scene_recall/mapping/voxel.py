@@ -139,6 +139,19 @@ class VoxelMap:
         self.max_voxels = max_voxels
         self._cells = {}
         self._frames = set()
+        self._shared = False
+
+    def fork(self):
+        """Stage an independent update, copying cells only when either map writes.
+
+        Cell arrays remain private to these maps. Clouds never expose them.
+        A failed staged integration leaves the published map unchanged.
+        """
+        staged = VoxelMap(self.voxel_size_m, self.max_voxels)
+        staged._cells = self._cells.copy()
+        staged._frames = self._frames.copy()
+        self._shared = staged._shared = True
+        return staged
 
     def integrate(
         self, samples: SurfaceSamples, T_MC_D: np.ndarray, frame_index: int
@@ -183,6 +196,15 @@ class VoxelMap:
         ):
             if key not in self._cells:
                 self._cells[key] = [np.zeros(3), np.zeros(3), 0, np.zeros(3), 0]
+            elif self._shared:
+                total, square, count, rgb, support = self._cells[key]
+                self._cells[key] = [
+                    total.copy(),
+                    square.copy(),
+                    count,
+                    rgb.copy(),
+                    support,
+                ]
             cell = self._cells[key]
             cell[0] += point
             cell[1] += point**2

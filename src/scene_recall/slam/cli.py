@@ -31,6 +31,10 @@ def main():
     parser.add_argument("--map", action="store_true")
     parser.add_argument("--contrast", choices=("raw", "clahe"), default="raw")
     parser.add_argument("--flow-recovery", action="store_true")
+    parser.add_argument("--metric-refinement", action="store_true")
+    parser.add_argument("--multiview-registration", action="store_true")
+    parser.add_argument("--multiview-scope", choices=("all", "loops"), default="all")
+    parser.add_argument("--incremental-mapping", action="store_true")
     parser.add_argument("--feature-scale", type=float, choices=(1.0, 0.5), default=1.0)
     parser.add_argument("--intervention", choices=("rgb", "depth"))
     parser.add_argument("--outage", type=int, nargs=2)
@@ -47,6 +51,10 @@ def main():
         retrieval=args.retrieval,
         contrast=args.contrast,
         flow_recovery=args.flow_recovery,
+        metric_refinement=args.metric_refinement,
+        multiview_registration=args.multiview_registration,
+        multiview_scope=args.multiview_scope,
+        incremental_mapping=args.incremental_mapping,
         feature_scale=args.feature_scale,
     )
     source, dataset = (
