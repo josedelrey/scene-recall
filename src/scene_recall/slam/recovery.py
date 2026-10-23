@@ -2,8 +2,9 @@
 
 import numpy as np
 
-from scene_recall.features import extract_rgbd_features
+from scene_recall.features import RGBDFeatures, extract_rgbd_features
 from scene_recall.odometry.evaluation import pose_error
+from scene_recall.slam.flow import flow_registration
 from scene_recall.slam.registration import RegistrationConfig, register_anchor
 from scene_recall.slam.system import RevisionFrontend
 
@@ -16,15 +17,43 @@ class RecoveryFrontend(RevisionFrontend):
     without an independence or calibrated probability claim.
     """
 
-    def __init__(self, config, *, horizon=15, candidates=3, contrast="raw"):
+    def __init__(
+        self,
+        config,
+        *,
+        horizon=15,
+        candidates=3,
+        contrast="raw",
+        flow=False,
+        feature_scale=1.0,
+        feature_extractor=None,
+    ):
         super().__init__(config)
         self.horizon, self.candidates = horizon, candidates
         self.registration = RegistrationConfig()
         self.recovery_enabled = True
         self.contrast = contrast
+        self.flow = flow
+        self.feature_scale = feature_scale
+        self._incoming = None
+        self.feature_extractor = feature_extractor
+        self._descriptor_family = None
+        if feature_extractor is not None and (
+            contrast != "raw" or feature_scale != 1.0
+        ):
+            raise ValueError("custom extractors own their image preprocessing")
 
     def _extract(self, observation, calibration):
-        if self.contrast == "raw":
+        self._incoming = observation
+        if self.feature_extractor is not None:
+            features = self.feature_extractor(observation, calibration)
+            if not isinstance(features, RGBDFeatures):
+                raise TypeError("custom extractor must return RGBDFeatures")
+            if self._descriptor_family not in (None, features.descriptor_family):
+                raise ValueError("descriptor family must remain fixed within a stream")
+            self._descriptor_family = features.descriptor_family
+            return features
+        if self.contrast == "raw" and self.feature_scale == 1.0:
             return super()._extract(observation, calibration)
         return extract_rgbd_features(
             observation,
@@ -32,6 +61,7 @@ class RecoveryFrontend(RevisionFrontend):
             self._sift,
             self.config.sparse.depth_edge_threshold_m,
             contrast=self.contrast,
+            scale=self.feature_scale,
         )
 
     def _recover_pose(self, first, second, calibration, previous_pose):
@@ -55,6 +85,20 @@ class RecoveryFrontend(RevisionFrontend):
                     @ calibration.T_RD
                 )
                 accepted.append((pose @ np.linalg.inv(transform), key, result))
+        if self.flow and self._incoming is not None:
+            result = flow_registration(
+                self._previous[0], self._incoming, calibration, contrast=self.contrast
+            )
+            attempts.append(result.diagnostics)
+            if result.T_target_source is not None:
+                transform = (
+                    np.linalg.inv(calibration.T_RD)
+                    @ result.T_target_source
+                    @ calibration.T_RD
+                )
+                accepted.append(
+                    (previous_pose @ np.linalg.inv(transform), index, result)
+                )
         if not accepted:
             return None, {"status": "rejected", "attempts": attempts}
         for a, _, _ in accepted[1:]:

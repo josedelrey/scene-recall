@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from helpers.runs import make_run
 
+from scene_recall.features import RGBDFeatures
 from scene_recall.mapping.voxel import MappingConfig
 from scene_recall.odometry.io import load_trajectory
 from scene_recall.slam.runner import run_online
@@ -61,3 +62,24 @@ def test_export_failure_does_not_publish_a_partial_scientific_run(
     assert not output.exists()
     assert output.with_suffix(".protocol.json").exists()
     assert not list(tmp_path.glob(".online-slam-*"))
+
+
+def test_external_extractor_provenance_is_frozen_and_references_are_hidden(tmp_path):
+    source, _ = make_run(tmp_path)
+
+    class Extractor:
+        def __init__(self):
+            self.provenance = {"model": {"version": "frozen"}}
+
+        def __call__(self, observation, calibration):
+            assert observation.T_WC_D is None
+            self.provenance["model"]["version"] = "mutated"
+            return RGBDFeatures(np.empty((0, 2)), None, np.empty((0, 3)), "xfeat")
+
+    output = tmp_path / "external"
+    report = run_online(
+        source, output, dataset="tum_rgbd", feature_extractor=Extractor()
+    )
+    protocol = json.loads((output / "protocol.json").read_text())
+    assert report["feature_extractor"] == protocol["feature_extractor"]
+    assert report["feature_extractor"] == {"model": {"version": "frozen"}}

@@ -30,6 +30,8 @@ def main():
     parser.add_argument("--optimize-local", action="store_true")
     parser.add_argument("--map", action="store_true")
     parser.add_argument("--contrast", choices=("raw", "clahe"), default="raw")
+    parser.add_argument("--flow-recovery", action="store_true")
+    parser.add_argument("--feature-scale", type=float, choices=(1.0, 0.5), default=1.0)
     parser.add_argument("--intervention", choices=("rgb", "depth"))
     parser.add_argument("--outage", type=int, nargs=2)
     parser.add_argument("--max-reference-gap-s", type=float, default=0.05)
@@ -44,6 +46,8 @@ def main():
         loops=not args.no_loops,
         retrieval=args.retrieval,
         contrast=args.contrast,
+        flow_recovery=args.flow_recovery,
+        feature_scale=args.feature_scale,
     )
     source, dataset = (
         (args.tum_path, "tum_rgbd")

@@ -66,13 +66,19 @@ def reject_depth_edges(depth: np.ndarray, threshold_m: float) -> np.ndarray:
     """
     if not np.isfinite(threshold_m) or threshold_m <= 0:
         raise ValueError("depth edge threshold must be finite and positive")
-    windows = np.lib.stride_tricks.sliding_window_view(
-        np.pad(depth, 1, constant_values=np.nan), (3, 3)
-    )
-    valid = np.isfinite(windows).all(axis=(-2, -1)) & (windows > 0).all(axis=(-2, -1))
-    continuous = (
-        windows.max(axis=(-2, -1)) - windows.min(axis=(-2, -1))
-    ) <= threshold_m
+    padded = np.pad(depth, 1, constant_values=np.nan)
+    minimum = padded[:-2, :-2].copy()
+    maximum = minimum.copy()
+    for row in range(3):
+        for column in range(3):
+            if row == column == 0:
+                continue
+            block = padded[row : row + depth.shape[0], column : column + depth.shape[1]]
+            # Propagate NaNs, preserving the full-neighborhood hole policy.
+            np.minimum(minimum, block, out=minimum)
+            np.maximum(maximum, block, out=maximum)
+    valid = np.isfinite(maximum) & (minimum > 0)
+    continuous = (maximum - minimum) <= threshold_m
     return np.where(valid & continuous, depth, np.nan).astype(depth.dtype)
 
 

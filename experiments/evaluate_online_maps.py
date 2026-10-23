@@ -20,7 +20,9 @@ from scene_recall.odometry.io import load_trajectory
 from scene_recall.run_metadata import code_hash, sha256
 
 
-def evaluate(run, output, policies, *, tolerance_m=0.0):
+def evaluate(run, output, policies, *, tolerance_m=0.0, reference_cohort="strict"):
+    if reference_cohort not in ("strict", "available"):
+        raise ValueError("unsupported reference cohort")
     if not np.isfinite(tolerance_m) or tolerance_m < 0:
         raise ValueError("audit tolerance must be finite and nonnegative")
     if output.exists():
@@ -33,11 +35,16 @@ def evaluate(run, output, policies, *, tolerance_m=0.0):
     count = min(len(rows), 240)
     train = list(range(0, count, 10))
     targets = list(range(5, count, 10))
+    missing_training = [i for i in train if rows[i].reference_pose is None]
+    if reference_cohort == "available":
+        train = [i for i in train if i not in missing_training]
     output.mkdir(parents=True)
     protocol = {
         "phase": "frozen before reconstruction scoring",
         "scope": "end-of-stream online map version, fixed first 24 training views and interleaved reference targets",
         "train": train,
+        "reference_cohort": reference_cohort,
+        "missing_fixed_training_reference_indices": missing_training,
         "targets": targets,
         "mapping": asdict(config),
         "audit_position_tolerance_m": tolerance_m,
@@ -138,7 +145,11 @@ def evaluate(run, output, policies, *, tolerance_m=0.0):
             "maximum_position_or_scatter_difference_m": maximum,
             "admitted_frames": sum(len(reconstruction[f"{i}_frames"]) for i in indices),
         }
-    if any(rows[i].reference_pose is None for i in train):
+    if (
+        not train
+        or rows[0].reference_pose is None
+        or any(rows[i].reference_pose is None for i in train)
+    ):
         result = {
             "status": "withheld",
             "reason": "missing fixed training reference",
@@ -218,9 +229,16 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--policies", nargs="+", default=["local", "online"])
     parser.add_argument("--audit-tolerance-m", type=float, default=0.0)
+    parser.add_argument(
+        "--reference-cohort", choices=("strict", "available"), default="strict"
+    )
     args = parser.parse_args()
     evaluate(
-        args.run, args.output_dir, args.policies, tolerance_m=args.audit_tolerance_m
+        args.run,
+        args.output_dir,
+        args.policies,
+        tolerance_m=args.audit_tolerance_m,
+        reference_cohort=args.reference_cohort,
     )
 
 

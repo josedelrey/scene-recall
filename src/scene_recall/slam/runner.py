@@ -5,6 +5,7 @@ import json
 import platform
 import tempfile
 from collections import Counter
+from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
 from time import perf_counter
@@ -35,6 +36,7 @@ def run_online(
     association=None,
     intervention=None,
     invocation=None,
+    feature_extractor=None,
 ):
     """Process original images, then score frozen estimates using references.
 
@@ -60,7 +62,9 @@ def run_online(
         )
     )
     cv2.setNumThreads(1)
-    engine = OnlineSLAM(reader.calibration, config, mapping=mapping)
+    engine = OnlineSLAM(
+        reader.calibration, config, mapping=mapping, feature_extractor=feature_extractor
+    )
     source_hash, delivered_hash = hashlib.sha256(), hashlib.sha256()
     rows, emitted, emitted_components, versions, frames = [], [], [], [], []
     protocol = {
@@ -68,6 +72,9 @@ def run_online(
         "scope": "raw causal processing, no final retrospective solve",
         "config": asdict(config),
         "mapping": asdict(mapping) if mapping else None,
+        "feature_extractor": None
+        if feature_extractor is None
+        else deepcopy(feature_extractor.provenance),
         "intervention": intervention,
         "package_sha256": code_hash(),
         "source": str(source),
@@ -187,6 +194,7 @@ def run_online(
         "initial_pose_stage": None,
         "config": asdict(config.local),
         "online_config": asdict(config),
+        "feature_extractor": protocol["feature_extractor"],
         "source": {
             "dataset": dataset,
             "sequence_id": reader.sequence_id,

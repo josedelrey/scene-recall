@@ -1,5 +1,8 @@
 # Experimental causal RGB-D SLAM
 
+The [online frontend follow-up](online_frontend.md) covers optical-flow recovery,
+learned-feature experiments and native-depth processing performance.
+
 SceneRecall now has a serial streaming coordinator that processes raw RGB-D,
 maintains local estimation and historical place memory, schedules global graph
 corrections, and synchronizes voxel reconstruction before publishing an update.

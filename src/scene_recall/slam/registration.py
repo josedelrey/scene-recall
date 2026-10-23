@@ -236,6 +236,31 @@ def register_anchor(first, second, calibration, config=None):
     """
     config = config or RegistrationConfig()
     pairs, _ = match_descriptors(first.descriptors, second.descriptors, config.ratio)
+    return register_anchor_pairs(first, second, pairs, calibration, config)
+
+
+def register_anchor_pairs(first, second, pairs, calibration, config=None):
+    """Verify explicit one-to-one associations, keeping fitting and test rows apart.
+
+    Association provenance belongs to the caller. No descriptor or flow score is
+    interpreted as extra metric evidence or independent information.
+    """
+    config = config or RegistrationConfig()
+    pairs = np.asarray(pairs)
+    if (
+        pairs.ndim != 2
+        or pairs.shape[1] != 2
+        or not np.issubdtype(pairs.dtype, np.integer)
+    ):
+        raise ValueError("pairs must be integer (N, 2)")
+    if len(pairs) and (
+        (pairs < 0).any()
+        or (pairs[:, 0] >= len(first.pixels)).any()
+        or (pairs[:, 1] >= len(second.pixels)).any()
+        or len(np.unique(pairs[:, 0])) != len(pairs)
+        or len(np.unique(pairs[:, 1])) != len(pairs)
+    ):
+        raise ValueError("pairs must reference unique source and target rows")
     if len(pairs):
         pairs = pairs[np.isfinite(first.points_R[pairs[:, 0]]).all(axis=1)]
     fit, test = np.arange(0, len(pairs), 2), np.arange(1, len(pairs), 2)

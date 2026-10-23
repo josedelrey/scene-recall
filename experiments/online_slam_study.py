@@ -23,6 +23,11 @@ POLICIES = {
     "native": ["--optimize-local"],
     "exhaustive": ["--retrieval", "exhaustive_votes"],
     "clahe": ["--contrast", "clahe"],
+    "flow": ["--contrast", "clahe", "--flow-recovery"],
+    "fast": ["--contrast", "clahe", "--flow-recovery", "--feature-scale", "0.5"],
+    "half": ["--contrast", "clahe", "--feature-scale", "0.5"],
+    "xfeat": [],
+    "xfeat_flow": ["--flow-recovery"],
 }
 
 
@@ -101,6 +106,9 @@ def summarize(root, manifest):
                 if "online" in loaded
                 else None
             )
+            control_policy = case.get("control", control_policy)
+            if control_policy is not None and control_policy not in loaded:
+                raise ValueError("comparison control is missing")
             if control_policy is not None:
                 control = loaded[control_policy][1]
                 for i in range(1, len(rows)):
@@ -174,6 +182,7 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--summarize-only", action="store_true")
+    parser.add_argument("--xfeat-checkout", type=Path)
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text())
     if args.summarize_only:
@@ -221,6 +230,24 @@ def main():
             "--map",
             *POLICIES[policy],
         ]
+        if policy.startswith("xfeat"):
+            if args.xfeat_checkout is None:
+                raise ValueError("XFeat policies require --xfeat-checkout")
+            command = [
+                sys.executable,
+                str(Path(__file__).with_name("xfeat_online.py")),
+                "--checkout",
+                str(args.xfeat_checkout),
+                "--source",
+                case["source"],
+                "--dataset",
+                case["dataset"],
+                "--start",
+                str(case.get("start", 0)),
+                "--output-dir",
+                str(destination),
+                *POLICIES[policy],
+            ]
         if case.get("stop") is not None:
             command.extend(["--stop", str(case["stop"])])
         if case.get("max_reference_gap_s") is not None:

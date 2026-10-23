@@ -39,8 +39,12 @@ class OnlineConfig:
     recovery: bool = True
     loops: bool = True
     contrast: str = "raw"
+    flow_recovery: bool = False
+    feature_scale: float = 1.0
 
     def __post_init__(self):
+        if self.feature_scale not in (1.0, 0.5) or isinstance(self.feature_scale, bool):
+            raise ValueError("feature scale must be 1.0 or 0.5")
         if self.contrast not in ("raw", "clahe"):
             raise ValueError("unsupported online contrast mode")
         if self.retrieval not in ("mean", "shortlist_votes", "exhaustive_votes"):
@@ -55,7 +59,7 @@ class OnlineConfig:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
-        for name in ("recovery", "loops"):
+        for name in ("recovery", "loops", "flow_recovery"):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"{name} must be boolean")
         if not isinstance(self.local, SLAMConfig) or not isinstance(
@@ -92,7 +96,9 @@ class OnlineSLAM:
     and place queries stop and report degraded operation.
     """
 
-    def __init__(self, calibration, config=None, *, mapping=None):
+    def __init__(
+        self, calibration, config=None, *, mapping=None, feature_extractor=None
+    ):
         self.calibration = calibration
         self.config = config or OnlineConfig()
         self.local = IncrementalSLAM(self.config.local)
@@ -101,6 +107,9 @@ class OnlineSLAM:
             horizon=self.config.recovery_horizon,
             candidates=self.config.recovery_candidates,
             contrast=self.config.contrast,
+            flow=self.config.flow_recovery,
+            feature_scale=self.config.feature_scale,
+            feature_extractor=feature_extractor,
         )
         frontend.recovery_enabled = self.config.recovery
         self.local.frontend = frontend
@@ -248,6 +257,7 @@ class OnlineSLAM:
             features.pixels.copy(),
             features.descriptors.copy(),
             features.points_R.copy(),
+            features.descriptor_family,
         )
         for array in (snapshot.pixels, snapshot.descriptors, snapshot.points_R):
             array.setflags(write=False)

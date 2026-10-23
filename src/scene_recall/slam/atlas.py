@@ -62,6 +62,9 @@ class AtlasConfig:
 def appearance_signature(features):
     if features.descriptors is None or not len(features.descriptors):
         return None
+    if features.descriptor_family == "xfeat":
+        signature = features.descriptors.mean(axis=0)
+        return signature / max(float(np.linalg.norm(signature)), 1e-12)
     descriptors = np.maximum(features.descriptors, 0)
     roots = np.sqrt(
         descriptors / np.maximum(descriptors.sum(axis=1, keepdims=True), 1e-12)
@@ -346,6 +349,7 @@ class SubmapAtlas:
                     features.pixels.copy(),
                     features.descriptors.copy(),
                     features.points_R.copy(),
+                    features.descriptor_family,
                 )
                 for array in (snapshot.pixels, snapshot.descriptors, snapshot.points_R):
                     array.setflags(write=False)
