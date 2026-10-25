@@ -12,6 +12,7 @@ from time import perf_counter
 import numpy as np
 
 from scene_recall.geometry.camera import transform_points
+from scene_recall.geometry.transforms import is_rigid
 from scene_recall.multiview.batch_ba import BatchConfig
 from scene_recall.multiview.diagnostics import grid_coverage
 from scene_recall.multiview.fixed_landmarks import DirectFactors
@@ -145,6 +146,95 @@ class IncrementalSLAM:
         self.points, self.identities = {}, {}
         self.last_seen = {}
         self.root_id, self.prior = None, None
+
+    def apply_global_feedback(self, depth_poses, point_positions, removed, calibration):
+        """Rebase the active tracker from a global solve without importing a prior.
+
+        The global result is a state revision, not an independent measurement.
+        Retained local factors remain single-owned raw observations. A local
+        marginal prior is dropped because its old chart cannot be transported
+        through a nonrigid historical correction without relinearization.
+        """
+        if self.config.optimize or not self.config.raw_ledger:
+            raise ValueError("global feedback requires the raw-ledger tracking mode")
+        if any(
+            key not in self.frontend.keyframes or not is_rigid(pose)
+            for key, pose in depth_poses.items()
+        ):
+            raise ValueError("feedback requires active rigid keyframe poses")
+        if any(
+            owner not in self.frontend.landmarks
+            or np.asarray(point).shape != (3,)
+            or not np.isfinite(point).all()
+            for owner, point in point_positions.items()
+        ):
+            raise ValueError("feedback requires finite active landmark positions")
+        if set(removed) & set(point_positions):
+            raise ValueError("a landmark cannot be revised and released together")
+        revised = {
+            key: pose
+            for key, pose in depth_poses.items()
+            if not np.allclose(
+                pose,
+                self.frontend.keyframes[key].T_SR @ calibration.T_RD,
+                atol=1e-12,
+                rtol=0,
+            )
+        }
+        moved = {
+            owner: point
+            for owner, point in point_positions.items()
+            if not np.allclose(
+                point, self.frontend.landmarks[owner].point_S, atol=1e-12, rtol=0
+            )
+        }
+        if not revised and not moved and not removed:
+            return {
+                "revised_cameras": 0,
+                "revised_landmarks": 0,
+                "released_landmarks": 0,
+            }
+        self.frontend.revise(revised, moved, calibration)
+        released = 0
+        for owner in removed:
+            if owner not in self.frontend.landmarks:
+                continue
+            for frame_id, frame in reversed(list(self.frontend.keyframes.items())):
+                matches = np.flatnonzero(self.frontend.owners[frame_id] == owner)
+                if not len(matches):
+                    continue
+                native = frame.features.points_R[matches[0]]
+                if np.isfinite(native).all():
+                    self.frontend.landmarks[owner].point_S = transform_points(
+                        native, frame.T_SR
+                    )
+                    released += 1
+                    break
+        for key, pose in revised.items():
+            if key in self.poses:
+                self.poses[key] = pose @ np.linalg.inv(self.transforms[key])
+        for owner, track in self.identities.items():
+            if owner in self.frontend.landmarks:
+                self.points[track] = self.frontend.landmarks[owner].point_S.copy()
+        current = self.previous.frame_index if self.previous is not None else None
+        if current in revised:
+            self.previous_pose = revised[current].copy()
+        if self.prior is not None:
+            self.prior = None
+            self.root_id = next(iter(self.poses), None)
+        self.revision += 1
+        return {
+            "revised_cameras": len(revised),
+            "revised_landmarks": len(moved),
+            "released_landmarks": released,
+        }
+
+    def synchronize_current(self, depth_pose):
+        """Carry an attached nonkeyframe into the revised tracking chart."""
+        if not is_rigid(depth_pose):
+            raise ValueError("current feedback pose must be rigid")
+        self.previous_pose = depth_pose.copy()
+        self.frontend._pose = depth_pose.copy()
 
     def _factors(self):
         packets = list(self.packets.values())

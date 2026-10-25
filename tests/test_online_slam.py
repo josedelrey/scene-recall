@@ -9,6 +9,7 @@ from helpers.mapping import plane, pose
 from test_local_map import scene
 
 from scene_recall.features import RGBDFeatures, extract_rgbd_features
+from scene_recall.geometry.camera import transform_points
 from scene_recall.mapping.voxel import MappingConfig, VoxelMap
 from scene_recall.slam.atlas import AtlasConfig
 from scene_recall.slam.linear import BlockSystem
@@ -120,6 +121,79 @@ def test_local_revision_refreshes_attached_global_nodes(monkeypatch):
         np.testing.assert_array_equal(
             engine.graph.local[frame], engine.archive.poses[frame]
         )
+
+
+def test_global_feedback_rebases_active_tracking_without_rewriting_odometry(
+    monkeypatch,
+):
+    config = OnlineConfig(
+        atlas=AtlasConfig(keyframe_stride=1),
+        loops=False,
+        observation_welding=True,
+        welding_feedback="joint",
+    )
+    engine, observations, _ = engine_scene(monkeypatch, count=8, config=config)
+    for observation in observations[:7]:
+        engine.process(observation)
+    owner = next(iter(engine.local.frontend.landmarks))
+    old_point = engine.local.frontend.landmarks[owner].point_S.copy()
+    old_local = engine.graph.local[5].copy()
+    revised = pose(0.02) @ engine.graph.poses[5]
+    engine.graph.poses[5] = revised
+    engine.welding.active_point_positions = lambda _graph, _segment: {
+        owner: old_point + [0.01, 0, 0]
+    }
+    report = engine._feedback()
+    assert report["revised_cameras"] >= 1
+    assert report["revised_landmarks"] == 1
+    np.testing.assert_allclose(engine.archive.poses[5], revised)
+    np.testing.assert_array_equal(engine.graph.local[5], old_local)
+    np.testing.assert_allclose(
+        engine.local.frontend.landmarks[owner].point_S, old_point + [0.01, 0, 0]
+    )
+    update = engine.process(observations[7])
+    assert update.status == "tracked"
+    np.testing.assert_allclose(
+        engine.graph.edges[6, 7].T_target_source,
+        np.linalg.inv(engine.archive.poses[7]) @ engine.archive.poses[6],
+    )
+
+
+def test_feedback_requires_raw_welding_without_local_optimizer():
+    with pytest.raises(ValueError, match="requires observation welding"):
+        OnlineConfig(welding_feedback="joint")
+    with pytest.raises(ValueError, match="second local prior"):
+        OnlineConfig(
+            local=replace(OnlineConfig().local, optimize=True),
+            observation_welding=True,
+            welding_feedback="joint",
+        )
+
+
+def test_feedback_releases_revoked_landmark_to_native_local_evidence(monkeypatch):
+    config = OnlineConfig(
+        atlas=AtlasConfig(keyframe_stride=1),
+        loops=False,
+        observation_welding=True,
+        welding_feedback="joint",
+    )
+    engine, observations, _ = engine_scene(monkeypatch, count=7, config=config)
+    for observation in observations:
+        engine.process(observation)
+    frame = engine.local.frontend.keyframes[5]
+    owner = int(engine.local.frontend.owners[5][0])
+    native = frame.features.points_R[0]
+    original = engine.local.frontend.landmarks[owner].point_S.copy()
+    engine.welding.active_point_positions = lambda _graph, _segment: {
+        owner: original + [0.02, 0, 0]
+    }
+    assert engine._feedback()["revised_landmarks"] == 1
+    engine.welding.active_point_positions = lambda _graph, _segment: {}
+    assert engine._feedback()["released_landmarks"] == 1
+    np.testing.assert_allclose(
+        engine.local.frontend.landmarks[owner].point_S,
+        transform_points(native, engine.local.frontend.keyframes[5].T_SR),
+    )
 
 
 def test_subthreshold_global_jitter_cannot_bypass_map_invalidation(monkeypatch):

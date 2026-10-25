@@ -62,6 +62,7 @@ class PointState:
     reference_frame: int
     reference_pose: np.ndarray
     members: tuple[int, ...]
+    support_edges: tuple[tuple[int, int], ...]
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,15 @@ class ObservationWelding:
         self.points = {}
         self.identity_map = {}
         self._next_identity = 0
+
+    def _active_edges(self, graph):
+        return {
+            key
+            for key, edge in graph.edges.items()
+            if edge.kind == "loop"
+            and key in self.associations
+            and graph.components.get(key[0]) == graph.components.get(key[1])
+        }
 
     def _spatial_order(self, pixels, indices):
         bins = {}
@@ -226,6 +236,17 @@ class ObservationWelding:
         self.validation[source, target] = validation
         return {"status": "admitted", "associations": len(matched)}
 
+    def revoke(self, source, target):
+        """Retire loop-owned identities and all point states that used them."""
+        edge = source, target
+        self.associations.pop(edge, None)
+        self.validation.pop(edge, None)
+        self.points = {
+            identity: state
+            for identity, state in self.points.items()
+            if edge not in state.support_edges
+        }
+
     def _validation_score(self, source, target, source_pose, target_pose):
         evidence = self.validation[source, target]
         if not len(evidence.source_points):
@@ -289,6 +310,43 @@ class ObservationWelding:
             accepted[edge] = count
         return {key: root(key) for key in parent}, accepted
 
+    def active_point_positions(self, graph, segment):
+        """Expose only point estimates supported by live loop identities."""
+        active = self._active_edges(graph)
+        identities, _ = self._identities(active)
+        members = {}
+        for track, identity in identities.items():
+            members.setdefault(identity, []).append(track)
+        visible = {}
+        for frame, view in self.views.items():
+            component = graph.components.get(frame)
+            if component is None:
+                continue
+            for track in view.factors.track_id:
+                visible.setdefault((view.segment, int(track)), set()).add(component)
+        result = {}
+        for (owner_segment, owner), track in self.identity_map.items():
+            if owner_segment != segment:
+                continue
+            identity = identities.get(track)
+            state = self.points.get(identity)
+            if (
+                state is None
+                or state.members != tuple(sorted(members[identity]))
+                or not set(state.support_edges) <= active
+                or state.reference_frame not in graph.poses
+            ):
+                continue
+            if graph.components[state.reference_frame] not in visible.get(
+                (segment, track), ()
+            ):
+                continue
+            correction = graph.poses[state.reference_frame] @ np.linalg.inv(
+                state.reference_pose
+            )
+            result[owner] = transform_points(state.position, correction)
+        return result
+
     def _window(self, source, target, graph, identities):
         component = graph.components[source]
         available = [
@@ -316,7 +374,7 @@ class ObservationWelding:
         )
         return [source, target, *ranked[: self.config.max_cameras - 2]]
 
-    def _factors(self, keys, graph, identities, members):
+    def _factors(self, keys, graph, identities, members, active):
         counts, native = {}, set()
         for frame in keys:
             packet = self.views[frame].factors
@@ -365,6 +423,7 @@ class ObservationWelding:
             if (
                 state is not None
                 and state.members == members[identity]
+                and set(state.support_edges) <= active
                 and state.reference_frame in graph.poses
             ):
                 correction = graph.poses[state.reference_frame] @ np.linalg.inv(
@@ -393,11 +452,7 @@ class ObservationWelding:
 
     def refine(self, graph, rejected=()):
         """Apply bounded raw-factor fits after topology has a current placement."""
-        active = {
-            key
-            for key, edge in graph.edges.items()
-            if edge.kind == "loop" and key in self.associations and key not in rejected
-        }
+        active = self._active_edges(graph) - set(rejected)
         identities, accepted = self._identities(active)
         members = {}
         for track, identity in identities.items():
@@ -413,7 +468,7 @@ class ObservationWelding:
                     {"edge": [source, target], "status": "insufficient support"}
                 )
                 continue
-            factors, tracks = self._factors(keys, graph, identities, members)
+            factors, tracks = self._factors(keys, graph, identities, members, active)
             if factors is None:
                 reports.append(
                     {"edge": [source, target], "status": "no shared factors"}
@@ -441,6 +496,10 @@ class ObservationWelding:
                 "observations": len(factors.view),
                 "status": diagnostic["status"],
                 "reason": diagnostic["reason"],
+                "initial_cost": diagnostic.get("initial_cost"),
+                "final_cost": diagnostic.get("final_cost"),
+                "max_camera_change_m": diagnostic.get("max_camera_change_m"),
+                "max_point_change_m": diagnostic.get("max_point_change_m"),
             }
             before = self._validation_score(
                 source, target, poses[keys.index(source)], poses[keys.index(target)]
@@ -488,6 +547,7 @@ class ObservationWelding:
                         source,
                         updated_poses[source].copy(),
                         members[track],
+                        tuple(sorted(active)),
                     )
                 graph.poses.update(updated_poses)
                 self.points.update(updated_points)

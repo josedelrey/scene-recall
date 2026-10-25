@@ -12,6 +12,7 @@ from time import perf_counter
 import numpy as np
 
 from scene_recall.features import RGBDFeatures
+from scene_recall.geometry.camera import transform_points
 from scene_recall.geometry.transforms import is_rigid
 from scene_recall.slam.atlas import AtlasConfig, appearance_signature
 from scene_recall.slam.loop_confirmation import LoopConfirmation
@@ -48,6 +49,7 @@ class OnlineConfig:
     multiview_registration: bool = False
     multiview_scope: str = "all"
     observation_welding: bool = False
+    welding_feedback: str = "off"
     welding: WeldingConfig = field(default_factory=WeldingConfig)
 
     def __post_init__(self):
@@ -88,10 +90,14 @@ class OnlineConfig:
             raise TypeError("invalid online graph configuration")
         if not isinstance(self.welding, WeldingConfig):
             raise TypeError("invalid observation welding configuration")
+        if self.welding_feedback not in ("off", "camera", "landmark", "joint"):
+            raise ValueError("unsupported welding feedback mode")
         if self.observation_welding and self.local.optimize:
             raise ValueError(
                 "welding requires raw local factors without a second local prior"
             )
+        if self.welding_feedback != "off" and not self.observation_welding:
+            raise ValueError("welding feedback requires observation welding")
         if self.shortlist < self.atlas.candidates:
             raise ValueError("shortlist must cover the verification budget")
 
@@ -175,6 +181,7 @@ class OnlineSLAM:
             if self.config.observation_welding
             else None
         )
+        self._feedback_owners = set()
 
     def _relative_context(self, source, context):
         return (
@@ -198,6 +205,8 @@ class OnlineSLAM:
                 continue
             if (source, target) in self.graph.edges:
                 self.graph.revoke(source, target, "historical conditioning revised")
+                if self.welding is not None:
+                    self.welding.revoke(source, target)
                 revoked = True
             del self.conditioning[source, target]
             events.append(
@@ -220,15 +229,23 @@ class OnlineSLAM:
         if len(self.graph.local) >= self.config.graph.max_nodes:
             return False
         previous = self.segment_nodes.get(segment)
-        self.graph.add_node(frame, segment, pose)
-        if previous is not None:
-            self.graph.add_edge(
-                previous, frame, np.linalg.inv(pose) @ self.graph.local[previous]
+        if previous is not None and self.config.welding_feedback != "off":
+            measurement = np.linalg.inv(pose) @ self.archive.poses[previous]
+            graph_local = self.graph.local[previous] @ np.linalg.inv(measurement)
+        else:
+            graph_local = pose
+            measurement = (
+                np.linalg.inv(pose) @ self.graph.local[previous]
+                if previous is not None
+                else None
             )
+        self.graph.add_node(frame, segment, graph_local)
+        if previous is not None:
+            self.graph.add_edge(previous, frame, measurement)
             correction = self.graph.poses[previous] @ np.linalg.inv(
                 self.graph.local[previous]
             )
-            self.graph.poses[frame] = correction @ pose
+            self.graph.poses[frame] = correction @ graph_local
             self.graph.components[frame] = self.graph.components[previous]
         else:
             self.graph.poses[frame] = pose.copy()
@@ -424,12 +441,53 @@ class OnlineSLAM:
         diagnostic = self.graph.solve()
         if self.welding is not None:
             diagnostic["welding"] = self.welding.refine(self.graph)
+        if self.config.welding_feedback != "off":
+            diagnostic["feedback"] = self._feedback()
         self.pending_solve = False
         if diagnostic["rejected_loops"]:
             # A rejected bridge must not authorize later ambiguous confirmations.
             self.confirmation = LoopConfirmation()
         self._refresh_confirmation()
         return diagnostic
+
+    def _feedback(self):
+        """Apply accepted global geometry to the current tracking segment."""
+        segment = self.local.segment_id
+        anchor = self.segment_nodes.get(segment)
+        if anchor is None or anchor not in self.graph.poses:
+            return {"status": "unavailable"}
+        chart = self.graph.poses[anchor] @ np.linalg.inv(self.archive.poses[anchor])
+        inverse = np.linalg.inv(chart)
+        cameras = (
+            {
+                key: inverse @ self.graph.poses[key]
+                for key in self.local.frontend.keyframes
+                if key in self.graph.poses and self.graph.segments[key] == segment
+            }
+            if self.config.welding_feedback in ("camera", "joint")
+            else {}
+        )
+        global_points = (
+            self.welding.active_point_positions(self.graph, segment)
+            if self.config.welding_feedback in ("landmark", "joint")
+            else {}
+        )
+        points = {
+            owner: transform_points(point, inverse)
+            for owner, point in global_points.items()
+            if owner in self.local.frontend.landmarks
+        }
+        removed = self._feedback_owners - points.keys()
+        result = self.local.apply_global_feedback(
+            cameras, points, removed, self.calibration
+        )
+        self._feedback_owners = set(points)
+        result["status"] = "applied"
+        result["local_prior_replayed"] = False
+        self.archive.apply(cameras)
+        current = self.local.previous.frame_index
+        self.local.synchronize_current(self.archive.poses[current])
+        return result
 
     def _publish(self):
         poses, components, dirty = [], [], []
@@ -441,7 +499,11 @@ class OnlineSLAM:
             else:
                 pose = (
                     self.graph.poses[anchor]
-                    @ np.linalg.inv(self.graph.local[anchor])
+                    @ np.linalg.inv(
+                        self.archive.poses[anchor]
+                        if self.config.welding_feedback != "off"
+                        else self.graph.local[anchor]
+                    )
                     @ local
                 )
                 component = self.graph.components[anchor]
@@ -565,6 +627,8 @@ class OnlineSLAM:
     def revoke(self, source, target, reason):
         """Revoke a raw loop and publish disconnection before accepting more data."""
         self.graph.revoke(source, target, reason)
+        if self.welding is not None:
+            self.welding.revoke(source, target)
         self.conditioning.pop((source, target), None)
         self.confirmation = LoopConfirmation()
         diagnostic = self._solve()

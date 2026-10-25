@@ -10,7 +10,7 @@ from scene_recall.data import Observation
 from scene_recall.features import RGBDFeatures
 from scene_recall.multiview.fixed_landmarks import make_direct_factors
 from scene_recall.multiview.pose_only import PoseOnlyConfig
-from scene_recall.slam.observation_welding import ObservationWelding
+from scene_recall.slam.observation_welding import ObservationWelding, PointState
 from scene_recall.slam.pose_graph import MetricPoseGraph
 from scene_recall.slam.system import IncrementalSLAM, SLAMConfig
 
@@ -80,6 +80,8 @@ def test_verified_bridge_joins_raw_tracks_and_revises_joint_state():
     assert report[0]["observations"] > 100
     assert report[0]["landmarks"] >= 20
     assert report[0]["status"] in ("refined", "unchanged")
+    if report[0]["status"] == "refined":
+        assert report[0]["final_cost"] < report[0]["initial_cost"]
     identities, accepted = weld._identities({(0, 4)})
     assert accepted[0, 4] >= 20
     assert any(
@@ -98,6 +100,7 @@ def test_revocation_removes_cross_map_identity_without_mutating_native_packets()
     graph.solve()
     weld.refine(graph)
     graph.revoke(0, 4, "controlled bridge removal")
+    weld.revoke(0, 4)
     graph.solve()
     assert weld.refine(graph) == []
     identities, _ = weld._identities(set())
@@ -109,6 +112,36 @@ def test_revocation_removes_cross_map_identity_without_mutating_native_packets()
     assert fingerprints == {
         frame: view.factors.fingerprint() for frame, view in weld.views.items()
     }
+
+
+def test_revoked_loop_invalidates_even_singleton_point_state():
+    graph, weld, features, transform = bridge()
+    weld.propose(0, 4, features[0], features[4], transform, 0.75)
+    graph.add_edge(0, 4, transform, kind="loop", group=(0, 4))
+    graph.solve()
+    identities, _ = weld._identities({(0, 4)})
+    track = next(
+        track
+        for (segment, _), track in weld.identity_map.items()
+        if segment == 0 and list(identities.values()).count(identities[track]) == 1
+    )
+    identity = identities[track]
+    weld.points[identity] = PointState(
+        np.array([0.1, 0.2, 1.0]),
+        0,
+        graph.poses[0].copy(),
+        (track,),
+        ((0, 4),),
+    )
+    assert weld.active_point_positions(graph, 0)
+    graph.revoke(0, 4, "remove supporting loop")
+    weld.revoke(0, 4)
+    graph.solve()
+    assert not weld.active_point_positions(graph, 0)
+    assert identity not in weld.points
+    graph.add_edge(0, 4, transform, kind="loop", group=(0, 4))
+    graph.solve()
+    assert not weld.active_point_positions(graph, 0)
 
 
 def test_raw_ledger_survives_local_landmark_budget(monkeypatch):

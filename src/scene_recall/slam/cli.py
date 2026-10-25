@@ -37,6 +37,13 @@ def main():
     parser.add_argument("--metric-refinement", action="store_true")
     parser.add_argument("--multiview-registration", action="store_true")
     parser.add_argument("--observation-welding", action="store_true")
+    parser.add_argument(
+        "--welding-feedback",
+        choices=("camera", "landmark", "joint"),
+        nargs="?",
+        const="landmark",
+        default="off",
+    )
     parser.add_argument("--multiview-scope", choices=("all", "loops"), default="all")
     parser.add_argument("--incremental-mapping", action="store_true")
     parser.add_argument("--feature-scale", type=float, choices=(1.0, 0.5), default=1.0)
@@ -60,6 +67,7 @@ def main():
         metric_refinement=args.metric_refinement,
         multiview_registration=args.multiview_registration,
         observation_welding=args.observation_welding,
+        welding_feedback=args.welding_feedback,
         multiview_scope=args.multiview_scope,
         incremental_mapping=args.incremental_mapping,
         feature_scale=args.feature_scale,
