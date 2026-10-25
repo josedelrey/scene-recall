@@ -20,9 +20,19 @@ from scene_recall.odometry.io import load_trajectory
 from scene_recall.run_metadata import code_hash, sha256
 
 
-def evaluate(run, output, policies, *, tolerance_m=0.0, reference_cohort="strict"):
+def evaluate(
+    run,
+    output,
+    policies,
+    *,
+    tolerance_m=0.0,
+    reference_cohort="strict",
+    extent="prefix",
+):
     if reference_cohort not in ("strict", "available"):
         raise ValueError("unsupported reference cohort")
+    if extent not in ("prefix", "full"):
+        raise ValueError("unsupported map evaluation extent")
     if not np.isfinite(tolerance_m) or tolerance_m < 0:
         raise ValueError("audit tolerance must be finite and nonnegative")
     if output.exists():
@@ -32,7 +42,7 @@ def evaluate(run, output, policies, *, tolerance_m=0.0, reference_cohort="strict
     if len({r["source"]["canonical_input_sha256"] for r, _ in loaded.values()}) != 1:
         raise ValueError("map evaluation policies have different source inputs")
     config = MappingConfig(pixel_stride=8)
-    count = min(len(rows), 240)
+    count = len(rows) if extent == "full" else min(len(rows), 240)
     train = list(range(0, count, 10))
     targets = list(range(5, count, 10))
     missing_training = [i for i in train if rows[i].reference_pose is None]
@@ -41,7 +51,8 @@ def evaluate(run, output, policies, *, tolerance_m=0.0, reference_cohort="strict
     output.mkdir(parents=True)
     protocol = {
         "phase": "frozen before reconstruction scoring",
-        "scope": "end-of-stream online map version, fixed first 24 training views and interleaved reference targets",
+        "scope": "end-of-stream online map version, fixed stride-10 training views and interleaved reference targets",
+        "evaluation_extent": extent,
         "train": train,
         "reference_cohort": reference_cohort,
         "missing_fixed_training_reference_indices": missing_training,
@@ -145,9 +156,22 @@ def evaluate(run, output, policies, *, tolerance_m=0.0, reference_cohort="strict
             "maximum_position_or_scatter_difference_m": maximum,
             "admitted_frames": sum(len(reconstruction[f"{i}_frames"]) for i in indices),
         }
+    anchor = 0
+    if reference_cohort == "available" and rows[0].reference_pose is None:
+        candidates = [
+            i
+            for i in train
+            if rows[i].reference_pose is not None
+            and all(
+                archive["component_id"][i] == archive["component_id"][0]
+                for archive in archives.values()
+            )
+        ]
+        anchor = candidates[0] if candidates else None
     if (
         not train
-        or rows[0].reference_pose is None
+        or anchor is None
+        or rows[anchor].reference_pose is None
         or any(rows[i].reference_pose is None for i in train)
     ):
         result = {
@@ -156,7 +180,7 @@ def evaluate(run, output, policies, *, tolerance_m=0.0, reference_cohort="strict
             "consistency": consistency,
         }
     else:
-        root = np.linalg.inv(rows[0].reference_pose)
+        root = np.linalg.inv(rows[anchor].reference_pose)
         poses = {
             "reference": {
                 i: root @ rows[i].reference_pose
@@ -165,8 +189,15 @@ def evaluate(run, output, policies, *, tolerance_m=0.0, reference_cohort="strict
             }
         }
         for policy, archive in archives.items():
+            alignment = (
+                np.linalg.inv(archive["T_component_depth"][anchor])
+                if anchor != 0
+                else np.eye(4)
+            )
             poses[policy] = {
-                i: archive["T_component_depth"][i]
+                i: alignment @ archive["T_component_depth"][i]
+                if anchor != 0
+                else archive["T_component_depth"][i]
                 for i in train
                 if archive["component_id"][i] == archive["component_id"][0]
                 and len(samples[i].points)
@@ -205,6 +236,7 @@ def evaluate(run, output, policies, *, tolerance_m=0.0, reference_cohort="strict
         np.savez_compressed(output / "predictions.npz", **arrays)
         result = {
             "status": "evaluated",
+            "reference_anchor_index": anchor,
             "consistency": consistency,
             "maps": map_stats,
             "common_training_indices": sorted(common_training),
@@ -229,6 +261,7 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--policies", nargs="+", default=["local", "online"])
     parser.add_argument("--audit-tolerance-m", type=float, default=0.0)
+    parser.add_argument("--extent", choices=("prefix", "full"), default="prefix")
     parser.add_argument(
         "--reference-cohort", choices=("strict", "available"), default="strict"
     )
@@ -239,6 +272,7 @@ def main():
         args.policies,
         tolerance_m=args.audit_tolerance_m,
         reference_cohort=args.reference_cohort,
+        extent=args.extent,
     )
 
 

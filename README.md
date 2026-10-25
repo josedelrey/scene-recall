@@ -70,6 +70,7 @@ and mapping preserves those boundaries. Reference poses are used for diagnostics
 | Experimental place retrieval, global loop correction and geometry validation | [Verified loop graph investigation](docs/slam_loop_graph.md) |
 | Causal tracking, scheduled global corrections and synchronized reconstruction | [Online SLAM integration](docs/online_slam.md) |
 | Raw RGB-D loop welding with revisable cameras and landmarks | [Observation-level welding experiment](docs/observation_level_welding.md) |
+| One replayable observation objective for active and historical states | [Persistent shared estimation experiment](docs/shared_estimation.md) |
 | Persistent tracks, shared landmarks and covisibility | [Multiview measurements](docs/multiview_tracks.md) |
 | Bounded experimental pose-only refinement and map evaluation | [Pose-only multiview experiment](docs/pose_only_multiview.md) |
 | Opt-in shared-landmark refinement and matched temporal controls | [Local RGB-D BA experiment](docs/local_rgbd_ba.md) |

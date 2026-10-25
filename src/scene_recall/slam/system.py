@@ -36,6 +36,7 @@ class SLAMConfig:
     exposure: str = "timed"
     optimize: bool = True
     raw_ledger: bool = False
+    raw_only: bool = False
     marginalization: str = "schur"
     stale_keyframes: int = 0
     solver: BatchConfig = field(
@@ -71,6 +72,12 @@ class SLAMConfig:
             raise ValueError("point retirement requires square-root marginalization")
         if not isinstance(self.optimize, bool) or not isinstance(self.raw_ledger, bool):
             raise TypeError("optimizer switches must be boolean")
+        if not isinstance(self.raw_only, bool):
+            raise TypeError("raw-only switch must be boolean")
+        if self.raw_only and (self.optimize or not self.raw_ledger):
+            raise ValueError(
+                "raw-only tracking requires a ledger and shared optimization"
+            )
         if not isinstance(self.solver, BatchConfig) or not isinstance(
             self.timing, TimingConfig
         ):
@@ -387,6 +394,8 @@ class IncrementalSLAM:
                 "native_index": samples.source_index[valid].copy(),
                 "frontend_identity": owners[valid].copy(),
             }
+        if self.config.raw_only:
+            return {"raw_observations": len(valid), "local_prior_factors": 0}
         existing = [int(i) for i in valid if int(owners[i]) in self.identities]
         new = [
             int(i)

@@ -37,6 +37,7 @@ def main():
     parser.add_argument("--metric-refinement", action="store_true")
     parser.add_argument("--multiview-registration", action="store_true")
     parser.add_argument("--observation-welding", action="store_true")
+    parser.add_argument("--shared-estimation", action="store_true")
     parser.add_argument(
         "--welding-feedback",
         choices=("camera", "landmark", "joint"),
@@ -67,6 +68,7 @@ def main():
         metric_refinement=args.metric_refinement,
         multiview_registration=args.multiview_registration,
         observation_welding=args.observation_welding,
+        shared_estimation=args.shared_estimation,
         welding_feedback=args.welding_feedback,
         multiview_scope=args.multiview_scope,
         incremental_mapping=args.incremental_mapping,

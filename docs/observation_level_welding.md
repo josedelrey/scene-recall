@@ -6,6 +6,10 @@ verified historical identities, jointly refines covisible cameras and landmarks,
 and publishes pose revisions through the existing versioned reconstruction path.
 It remains experimental. The sparse online defaults are unchanged.
 
+The subsequent [persistent shared estimation experiment](shared_estimation.md)
+replaces the conditional welding overlay with one replayable raw camera–landmark
+objective. This document retains the earlier method and its comparison evidence.
+
 ## Architecture
 
 `--observation-welding` enables a separate raw-factor ledger in
@@ -189,8 +193,12 @@ emitted trajectory and atlas array in its saved 120-frame control prefix.
 On RPY 400, the final poses of the first 240 frames move a median 109 mm from
 their emitted positions with landmark feedback, versus 33 mm with welding
 alone. The feedback run admits two additional observation-welding events after
-frame 240. This locates the final-score divergence in later global revisions,
-without proving which associations or measurements are at fault.
+frame 240. A subsequent [matched-horizon audit](shared_estimation.md) found
+that the feedback run already has a 109.66 mm median emitted-to-final shift at
+240 inputs, versus 108.84 mm over that same prefix after 400 inputs. The
+240-to-400 pose change has 8.64 mm RMSE and 18.71 mm p95. The additional events
+therefore do not by themselves explain the large earlier shift. Event-level
+causal attribution remains unresolved.
 
 The feedback implementation proves a causal state transport and revocation
 contract, but these results do not establish a general accuracy improvement.

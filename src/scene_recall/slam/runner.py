@@ -18,7 +18,11 @@ from scene_recall.datasets.scannet import ScanNetReader
 from scene_recall.datasets.tum import TUMConfig, TUMReader
 from scene_recall.odometry.evaluation import evaluate_trajectory, pose_error
 from scene_recall.odometry.io import save_run
-from scene_recall.odometry.pipeline import PairEstimate, TrajectoryFrame
+from scene_recall.odometry.pipeline import (
+    PairEstimate,
+    TrajectoryFrame,
+    validate_trajectory,
+)
 from scene_recall.run_metadata import code_hash, peak_rss
 from scene_recall.slam.evaluation import latency_statistics, score_components
 from scene_recall.slam.online import OnlineConfig, OnlineSLAM
@@ -171,6 +175,7 @@ def run_online(
         )
         for i, row in enumerate(rows)
     ]
+    validate_trajectory(rows)
     loops = []
     # Evaluate only after all estimator state and placement decisions are frozen.
     for edge in engine.graph.edges.values():
@@ -281,6 +286,11 @@ def _export_online(output, engine, emitted, emitted_components, versions, start)
         "kind": np.array([edge.kind for edge in engine.graph.edges.values()]),
     }
     np.savez_compressed(output / "constraints.npz", **edge_arrays)
+    if engine.config.shared_estimation:
+        np.savez_compressed(
+            output / "shared_estimation.npz",
+            **engine.welding.export_arrays(engine.graph),
+        )
     if engine.reconstruction is not None:
         arrays = {}
         for index, chunk in enumerate(engine.reconstruction.snapshot()):

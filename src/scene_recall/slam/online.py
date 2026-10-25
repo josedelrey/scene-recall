@@ -23,6 +23,7 @@ from scene_recall.slam.reconstruction import RevisionReconstruction
 from scene_recall.slam.recovery import RecoveryFrontend
 from scene_recall.slam.registration import register_anchor
 from scene_recall.slam.retrieval import descriptor_votes
+from scene_recall.slam.shared_estimation import SharedConfig, SharedEstimator
 from scene_recall.slam.system import IncrementalSLAM, RevisionArchive, SLAMConfig
 
 
@@ -51,6 +52,8 @@ class OnlineConfig:
     observation_welding: bool = False
     welding_feedback: str = "off"
     welding: WeldingConfig = field(default_factory=WeldingConfig)
+    shared_estimation: bool = False
+    shared: SharedConfig = field(default_factory=SharedConfig)
 
     def __post_init__(self):
         if self.multiview_scope not in ("all", "loops"):
@@ -79,6 +82,7 @@ class OnlineConfig:
             "incremental_mapping",
             "multiview_registration",
             "observation_welding",
+            "shared_estimation",
         ):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"{name} must be boolean")
@@ -98,6 +102,22 @@ class OnlineConfig:
             )
         if self.welding_feedback != "off" and not self.observation_welding:
             raise ValueError("welding feedback requires observation welding")
+        if not isinstance(self.shared, SharedConfig):
+            raise TypeError("invalid shared estimation configuration")
+        if self.shared_estimation:
+            if (
+                self.local.optimize
+                or self.observation_welding
+                or self.welding_feedback != "off"
+                or self.multiview_registration
+            ):
+                raise ValueError(
+                    "shared estimation owns the only camera-landmark objective"
+                )
+            if self.atlas.keyframe_stride != self.local.keyframe_interval:
+                raise ValueError(
+                    "shared estimation requires matched tracking and ledger cadence"
+                )
         if self.shortlist < self.atlas.candidates:
             raise ValueError("shortlist must cover the verification budget")
 
@@ -141,7 +161,12 @@ class OnlineSLAM:
         if self.config.multiview_registration and self.registration.metric_refinement:
             raise ValueError("select one registration refinement")
         self.local = IncrementalSLAM(
-            replace(self.config.local, raw_ledger=self.config.observation_welding)
+            replace(
+                self.config.local,
+                raw_ledger=self.config.observation_welding
+                or self.config.shared_estimation,
+                raw_only=self.config.shared_estimation,
+            )
         )
         frontend = RecoveryFrontend(
             self.local.frontend.config,
@@ -182,6 +207,10 @@ class OnlineSLAM:
             else None
         )
         self._feedback_owners = set()
+        if self.config.shared_estimation:
+            self.welding = SharedEstimator(
+                calibration, self.config.welding, self.config.shared
+            )
 
     def _relative_context(self, source, context):
         return (
@@ -229,7 +258,9 @@ class OnlineSLAM:
         if len(self.graph.local) >= self.config.graph.max_nodes:
             return False
         previous = self.segment_nodes.get(segment)
-        if previous is not None and self.config.welding_feedback != "off":
+        if previous is not None and (
+            self.config.welding_feedback != "off" or self.config.shared_estimation
+        ):
             measurement = np.linalg.inv(pose) @ self.archive.poses[previous]
             graph_local = self.graph.local[previous] @ np.linalg.inv(measurement)
         else:
@@ -438,10 +469,16 @@ class OnlineSLAM:
         }
 
     def _solve(self):
-        diagnostic = self.graph.solve()
-        if self.welding is not None:
+        if self.config.shared_estimation:
+            diagnostic = {
+                "rejected_loops": [],
+                "shared": self.welding.refine(self.graph),
+            }
+        else:
+            diagnostic = self.graph.solve()
+        if self.welding is not None and not self.config.shared_estimation:
             diagnostic["welding"] = self.welding.refine(self.graph)
-        if self.config.welding_feedback != "off":
+        if self.config.welding_feedback != "off" or self.config.shared_estimation:
             diagnostic["feedback"] = self._feedback()
         self.pending_solve = False
         if diagnostic["rejected_loops"]:
@@ -456,20 +493,39 @@ class OnlineSLAM:
         anchor = self.segment_nodes.get(segment)
         if anchor is None or anchor not in self.graph.poses:
             return {"status": "unavailable"}
-        chart = self.graph.poses[anchor] @ np.linalg.inv(self.archive.poses[anchor])
+        chart = (
+            self.graph.poses[self.segment_roots[segment]]
+            if self.config.shared_estimation
+            else self.graph.poses[anchor] @ np.linalg.inv(self.archive.poses[anchor])
+        )
         inverse = np.linalg.inv(chart)
+        shared_cameras = (
+            {
+                key: inverse @ pose
+                for key, pose in self.graph.poses.items()
+                if self.graph.segments[key] == segment
+            }
+            if self.config.shared_estimation
+            else {}
+        )
+        if shared_cameras:
+            shared_cameras[self.segment_roots[segment]] = np.eye(4)
         cameras = (
             {
-                key: inverse @ self.graph.poses[key]
+                key: shared_cameras[key]
+                if self.config.shared_estimation
+                else inverse @ self.graph.poses[key]
                 for key in self.local.frontend.keyframes
                 if key in self.graph.poses and self.graph.segments[key] == segment
             }
             if self.config.welding_feedback in ("camera", "joint")
+            or self.config.shared_estimation
             else {}
         )
         global_points = (
             self.welding.active_point_positions(self.graph, segment)
             if self.config.welding_feedback in ("landmark", "joint")
+            or self.config.shared_estimation
             else {}
         )
         points = {
@@ -484,7 +540,11 @@ class OnlineSLAM:
         self._feedback_owners = set(points)
         result["status"] = "applied"
         result["local_prior_replayed"] = False
-        self.archive.apply(cameras)
+        if self.config.shared_estimation:
+            result["historical_information"] = (
+                "retained raw observations in shared objective"
+            )
+        self.archive.apply(shared_cameras if self.config.shared_estimation else cameras)
         current = self.local.previous.frame_index
         self.local.synchronize_current(self.archive.poses[current])
         return result
@@ -502,6 +562,7 @@ class OnlineSLAM:
                     @ np.linalg.inv(
                         self.archive.poses[anchor]
                         if self.config.welding_feedback != "off"
+                        or self.config.shared_estimation
                         else self.graph.local[anchor]
                     )
                     @ local
@@ -566,10 +627,16 @@ class OnlineSLAM:
                 edge.kind == "loop" for edge in self.graph.edges.values()
             )
         invalidations, force_solve = self._invalidate_conditioning()
-        node = boundary or frame % self.config.atlas.keyframe_stride == 0
+        node = boundary or (
+            frame in self.local.frontend.keyframes
+            if self.config.shared_estimation
+            else frame % self.config.atlas.keyframe_stride == 0
+        )
         admitted = node and self._node(frame, segment, self.archive.poses[frame])
         if admitted and self.welding is not None:
             self.welding.admit(frame, segment, self.local.last_raw_measurement)
+            if self.config.shared_estimation:
+                self.pending_solve = True
         self.anchors.append(self.segment_nodes.get(segment))
         features = self.local.frontend._previous[1]
         events = invalidations
@@ -580,8 +647,13 @@ class OnlineSLAM:
             self._remember(frame, features)
         diagnostic["place_seconds"] = perf_counter() - query_start
         diagnostic["graph"] = None
-        if force_solve or (
-            self.pending_solve and frame - self.last_solve >= self.config.solve_interval
+        if (
+            (self.config.shared_estimation and admitted)
+            or force_solve
+            or (
+                self.pending_solve
+                and frame - self.last_solve >= self.config.solve_interval
+            )
         ):
             solve_start = perf_counter()
             diagnostic["graph"] = self._solve()
@@ -593,6 +665,8 @@ class OnlineSLAM:
         if self.reconstruction is not None:
             mapping_start = perf_counter()
             self.reconstruction.admit(observation, segment)
+            if self.config.shared_estimation:
+                self.reconstruction.repartition(self.components)
             rebuilt = self.reconstruction.synchronize(
                 self.poses, self.components, self.version, dirty
             )
@@ -634,6 +708,8 @@ class OnlineSLAM:
         diagnostic = self._solve()
         dirty = self._publish()
         if self.reconstruction is not None:
+            if self.config.shared_estimation:
+                self.reconstruction.repartition(self.components)
             self.reconstruction.synchronize(
                 self.poses, self.components, self.version, dirty
             )

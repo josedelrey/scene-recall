@@ -110,6 +110,26 @@ class RevisionReconstruction:
         self._cache = next_cache
         return sorted(affected)
 
+    def repartition(self, components):
+        """Split chunks when raw-observation connectivity exposes distinct gauges."""
+        if all(len({components[i] for i in c.frames}) == 1 for c in self.chunks):
+            return
+        chunks = []
+        for old in self.chunks:
+            group = None
+            for frame in old.frames:
+                if group is None or components[frame] != components[group.frames[-1]]:
+                    group = ReconstructionChunk(old.segment)
+                    chunks.append(group)
+                group.frames.append(frame)
+        self.chunks = chunks
+        self.membership = {
+            frame: i for i, chunk in enumerate(chunks) for frame in chunk.frames
+        }
+        self.dirty_chunks = set(range(len(chunks)))
+        self._cache = None
+        self.ready = False
+
     def snapshot(self):
         if not self.ready:
             raise RuntimeError("reconstruction has not synchronized current revisions")
