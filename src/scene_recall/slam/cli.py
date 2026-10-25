@@ -28,11 +28,15 @@ def main():
     parser.add_argument("--no-recovery", action="store_true")
     parser.add_argument("--no-loops", action="store_true")
     parser.add_argument("--optimize-local", action="store_true")
+    parser.add_argument(
+        "--local-exposure", choices=("timed", "static"), default="timed"
+    )
     parser.add_argument("--map", action="store_true")
     parser.add_argument("--contrast", choices=("raw", "clahe"), default="raw")
     parser.add_argument("--flow-recovery", action="store_true")
     parser.add_argument("--metric-refinement", action="store_true")
     parser.add_argument("--multiview-registration", action="store_true")
+    parser.add_argument("--observation-welding", action="store_true")
     parser.add_argument("--multiview-scope", choices=("all", "loops"), default="all")
     parser.add_argument("--incremental-mapping", action="store_true")
     parser.add_argument("--feature-scale", type=float, choices=(1.0, 0.5), default=1.0)
@@ -45,7 +49,9 @@ def main():
     config = OnlineConfig()
     config = replace(
         config,
-        local=replace(config.local, optimize=args.optimize_local),
+        local=replace(
+            config.local, optimize=args.optimize_local, exposure=args.local_exposure
+        ),
         recovery=not args.no_recovery,
         loops=not args.no_loops,
         retrieval=args.retrieval,
@@ -53,6 +59,7 @@ def main():
         flow_recovery=args.flow_recovery,
         metric_refinement=args.metric_refinement,
         multiview_registration=args.multiview_registration,
+        observation_welding=args.observation_welding,
         multiview_scope=args.multiview_scope,
         incremental_mapping=args.incremental_mapping,
         feature_scale=args.feature_scale,

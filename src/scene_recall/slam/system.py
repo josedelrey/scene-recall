@@ -34,6 +34,7 @@ class SLAMConfig:
     max_landmarks: int = 128
     exposure: str = "timed"
     optimize: bool = True
+    raw_ledger: bool = False
     marginalization: str = "schur"
     stale_keyframes: int = 0
     solver: BatchConfig = field(
@@ -67,7 +68,7 @@ class SLAMConfig:
             raise ValueError("stale_keyframes must be a nonnegative integer")
         if self.stale_keyframes and self.marginalization != "sqrt":
             raise ValueError("point retirement requires square-root marginalization")
-        if not isinstance(self.optimize, bool):
+        if not isinstance(self.optimize, bool) or not isinstance(self.raw_ledger, bool):
             raise TypeError("optimizer switches must be boolean")
         if not isinstance(self.solver, BatchConfig) or not isinstance(
             self.timing, TimingConfig
@@ -136,6 +137,7 @@ class IncrementalSLAM:
         self.revision = 0
         self._next_track = 0
         self.last_measurement = None
+        self.last_raw_measurement = None
         self._clear_graph()
 
     def _clear_graph(self):
@@ -268,6 +270,33 @@ class IncrementalSLAM:
         pose = depth_pose @ np.linalg.inv(samples.T_RcD)
         owners = self.frontend.owners[key]
         valid = np.flatnonzero(owners >= 0)
+        if self.config.raw_ledger and len(valid):
+            if len(np.unique(owners[valid])) != len(valid):
+                raise ValueError("frontend identity has multiple features in one view")
+            seeds = []
+            for i in valid:
+                if samples.source_index[i] >= 0:
+                    seeds.append(transform_points(samples.points_R[i], pose))
+                else:
+                    seeds.append(self.frontend.landmarks[int(owners[i])].point_S)
+            raw = DirectFactors(
+                np.full(len(valid), key, dtype=int),
+                owners[valid].astype(int).copy(),
+                np.array(seeds),
+                features.pixels[valid].copy(),
+                samples.points_D[valid].copy(),
+                np.repeat(samples.T_RcD[None], len(valid), axis=0),
+                samples.whitening_D[valid].copy(),
+                np.ones(len(valid)),
+            )
+            self.last_raw_measurement = {
+                **{
+                    name: getattr(raw, name).copy() for name in raw.__dataclass_fields__
+                },
+                "feature_index": valid.copy(),
+                "native_index": samples.source_index[valid].copy(),
+                "frontend_identity": owners[valid].copy(),
+            }
         existing = [int(i) for i in valid if int(owners[i]) in self.identities]
         new = [
             int(i)
@@ -341,6 +370,7 @@ class IncrementalSLAM:
     def process(self, observation, calibration):
         started = perf_counter()
         self.last_measurement = None
+        self.last_raw_measurement = None
         if self.previous is None:
             if observation.frame_index != 0:
                 raise ValueError("SLAM starts at frame zero")

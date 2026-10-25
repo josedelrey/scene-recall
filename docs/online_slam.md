@@ -11,6 +11,11 @@ offline graph experiments retain their defaults and scientific artifacts.
 This is an integration milestone with explicit capacity and correctness limits,
 rather than a claim of production robustness or camera-rate operation.
 
+The later [observation-level welding experiment](observation_level_welding.md)
+adds opt-in persistent RGB-D keyframe factors and bounded joint correction of
+verified historical neighborhoods. Its mixed external geometry results keep
+the existing online defaults unchanged.
+
 ## Running the system
 
 ```bash

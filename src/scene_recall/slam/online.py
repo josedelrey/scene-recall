@@ -16,6 +16,7 @@ from scene_recall.geometry.transforms import is_rigid
 from scene_recall.slam.atlas import AtlasConfig, appearance_signature
 from scene_recall.slam.loop_confirmation import LoopConfirmation
 from scene_recall.slam.multiview_registration import register_multiview
+from scene_recall.slam.observation_welding import ObservationWelding, WeldingConfig
 from scene_recall.slam.pose_graph import MetricPoseGraph, PoseGraphConfig
 from scene_recall.slam.reconstruction import RevisionReconstruction
 from scene_recall.slam.recovery import RecoveryFrontend
@@ -46,6 +47,8 @@ class OnlineConfig:
     incremental_mapping: bool = False
     multiview_registration: bool = False
     multiview_scope: str = "all"
+    observation_welding: bool = False
+    welding: WeldingConfig = field(default_factory=WeldingConfig)
 
     def __post_init__(self):
         if self.multiview_scope not in ("all", "loops"):
@@ -73,6 +76,7 @@ class OnlineConfig:
             "metric_refinement",
             "incremental_mapping",
             "multiview_registration",
+            "observation_welding",
         ):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"{name} must be boolean")
@@ -82,6 +86,12 @@ class OnlineConfig:
             raise TypeError("invalid online local or atlas configuration")
         if not isinstance(self.graph, PoseGraphConfig):
             raise TypeError("invalid online graph configuration")
+        if not isinstance(self.welding, WeldingConfig):
+            raise TypeError("invalid observation welding configuration")
+        if self.observation_welding and self.local.optimize:
+            raise ValueError(
+                "welding requires raw local factors without a second local prior"
+            )
         if self.shortlist < self.atlas.candidates:
             raise ValueError("shortlist must cover the verification budget")
 
@@ -124,7 +134,9 @@ class OnlineSLAM:
         )
         if self.config.multiview_registration and self.registration.metric_refinement:
             raise ValueError("select one registration refinement")
-        self.local = IncrementalSLAM(self.config.local)
+        self.local = IncrementalSLAM(
+            replace(self.config.local, raw_ledger=self.config.observation_welding)
+        )
         frontend = RecoveryFrontend(
             self.local.frontend.config,
             horizon=self.config.recovery_horizon,
@@ -158,6 +170,11 @@ class OnlineSLAM:
         self.pending_solve, self.last_solve = False, -self.config.solve_interval
         self.events = []
         self.conditioning = {}
+        self.welding = (
+            ObservationWelding(calibration, self.config.welding)
+            if self.config.observation_welding
+            else None
+        )
 
     def _relative_context(self, source, context):
         return (
@@ -270,6 +287,7 @@ class OnlineSLAM:
                 key=lambda key: (-votes[key][0], -votes[key][1], distances[key], key)
             )
         candidates, events = [], []
+        observations = {}
         for source in ranked[: self.config.atlas.candidates]:
             result = register_anchor(
                 self.bank[source][0],
@@ -331,6 +349,7 @@ class OnlineSLAM:
                     transform,
                 )
             )
+            observations[source, frame] = result.T_target_source
             events.append(event)
         self._refresh_confirmation()
         statuses, added = self.confirmation.propose_batch(candidates)
@@ -343,6 +362,23 @@ class OnlineSLAM:
                 self.graph.add_edge(
                     source, target, measurement, kind="loop", group=group
                 )
+                if self.welding is not None and (source, target) in observations:
+                    welded = self.welding.propose(
+                        source,
+                        target,
+                        self.bank[source][0],
+                        features,
+                        observations[source, target],
+                        self.registration.ratio,
+                    )
+                    events.append(
+                        {
+                            "source": source,
+                            "target": target,
+                            "status": "observation_welding",
+                            "welding": welded,
+                        }
+                    )
                 self.pending_solve = True
         return events
 
@@ -386,6 +422,8 @@ class OnlineSLAM:
 
     def _solve(self):
         diagnostic = self.graph.solve()
+        if self.welding is not None:
+            diagnostic["welding"] = self.welding.refine(self.graph)
         self.pending_solve = False
         if diagnostic["rejected_loops"]:
             # A rejected bridge must not authorize later ambiguous confirmations.
@@ -468,6 +506,8 @@ class OnlineSLAM:
         invalidations, force_solve = self._invalidate_conditioning()
         node = boundary or frame % self.config.atlas.keyframe_stride == 0
         admitted = node and self._node(frame, segment, self.archive.poses[frame])
+        if admitted and self.welding is not None:
+            self.welding.admit(frame, segment, self.local.last_raw_measurement)
         self.anchors.append(self.segment_nodes.get(segment))
         features = self.local.frontend._previous[1]
         events = invalidations
