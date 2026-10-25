@@ -153,11 +153,18 @@ def test_revocation_rebuilds_raw_partition_and_disconnected_gauges():
     assert fingerprint == {k: v.factors.fingerprint() for k, v in shared.views.items()}
 
 
-def test_shared_stream_has_one_history_and_prefix_causality(monkeypatch):
+@pytest.mark.parametrize("incremental", [False, True])
+def test_shared_stream_has_one_history_and_prefix_causality(monkeypatch, incremental):
     config = OnlineConfig(
         shared_estimation=True,
         local=SLAMConfig(optimize=False, exposure="static"),
         loops=False,
+        shared=SharedConfig(
+            linearization="selective" if incremental else "full",
+            preconditioner="coarse" if incremental else "jacobi",
+            admission="covisibility" if incremental else "balanced",
+            retry_linear_failure=incremental,
+        ),
     )
     engine, observations, _ = engine_scene(
         monkeypatch, count=17, config=config, mapping=MappingConfig(pixel_stride=20)

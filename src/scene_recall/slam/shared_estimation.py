@@ -13,6 +13,10 @@ from scene_recall.geometry.camera import transform_points
 from scene_recall.multiview.batch_ba import BatchConfig
 from scene_recall.multiview.fixed_landmarks import DirectFactors
 from scene_recall.slam.observation_welding import ObservationWelding
+from scene_recall.slam.shared_linearization import (
+    ObservationCache,
+    RelinearizationConfig,
+)
 from scene_recall.slam.shared_solver import solve_shared
 
 
@@ -21,10 +25,27 @@ class SharedConfig:
     solver: BatchConfig = field(default_factory=lambda: BatchConfig(max_iterations=8))
     rank_check_cameras: int = 24
     require_full_rank: bool = False
+    linearization: str = "full"
+    relinearization: RelinearizationConfig = field(
+        default_factory=RelinearizationConfig
+    )
+    preconditioner: str = "jacobi"
+    admission: str = "balanced"
+    retry_linear_failure: bool = False
 
     def __post_init__(self):
         if not isinstance(self.solver, BatchConfig):
             raise TypeError("invalid shared solver configuration")
+        if self.linearization not in ("full", "selective"):
+            raise ValueError("unknown shared linearization policy")
+        if not isinstance(self.relinearization, RelinearizationConfig):
+            raise TypeError("invalid shared relinearization configuration")
+        if self.preconditioner not in ("jacobi", "coarse"):
+            raise ValueError("unknown shared preconditioner")
+        if self.admission not in ("balanced", "covisibility"):
+            raise ValueError("unknown shared admission policy")
+        if not isinstance(self.retry_linear_failure, bool):
+            raise TypeError("shared linear retry policy must be boolean")
         if not isinstance(self.require_full_rank, bool):
             raise TypeError("shared rank policy must be boolean")
         if (
@@ -39,10 +60,11 @@ class SharedEstimator(ObservationWelding):
     """Retain nonlinear evidence and warm-start states across every update.
 
     Appending observations triggers one shared solve, including history. Identity
-    edits rebuild the variable partition from immutable packets. There is no
-    second local objective, imported estimate prior or permanent marginalization.
-    This is incremental state management with full nonlinear relinearization,
-    rather than an incremental Bayes-tree factorization.
+    edits rebuild the variable partition from immutable packets. The complete
+    solver remains the reference. Optional endpoint derivative reuse and coarse
+    preconditioning retain the same raw objective and full landmark coupling.
+    There is no second local objective, imported prior, permanent marginalization
+    or incrementally updated Bayes-tree factorization.
     """
 
     def __init__(self, calibration, config=None, shared=None):
@@ -53,6 +75,62 @@ class SharedEstimator(ObservationWelding):
         self._partition = None
         self.live_identities = {}
         self.track_components = {}
+        self.cache = None
+        self.admission_report = {}
+
+    def _admission_order(self, segment, measurement, known, new):
+        if self.shared.admission == "balanced":
+            return super()._admission_order(segment, measurement, known, new)
+        # Prefer spatially spread links to the latest measured camera, then
+        # other retained evidence. Reserve a quarter for future track support.
+        previous = next(
+            (
+                self.views[k]
+                for k in sorted(self.views, reverse=True)
+                if self.views[k].segment == segment
+            ),
+            None,
+        )
+        tracks = set(previous.factors.track_id) if previous is not None else set()
+        recent = [
+            i
+            for i in known
+            if self.identity_map[segment, int(measurement["frontend_identity"][i])]
+            in tracks
+        ]
+        remaining = [i for i in known if i not in set(recent)]
+        existing = self._spatial_order(
+            measurement["pixels"], recent
+        ) + self._spatial_order(measurement["pixels"], remaining)
+        fresh = self._spatial_order(measurement["pixels"], new)
+        quota = 3 * self.config.max_observations_per_view // 4
+        return [
+            *existing[:quota],
+            *fresh[: self.config.max_observations_per_view - quota],
+            *existing[quota:],
+            *fresh[self.config.max_observations_per_view - quota :],
+        ]
+
+    def admit(self, frame, segment, measurement):
+        previous = max(
+            (k for k in self.views if self.views[k].segment == segment), default=None
+        )
+        admitted = super().admit(frame, segment, measurement)
+        if admitted:
+            packet = self.views[frame].factors
+            shared = (
+                np.intersect1d(packet.track_id, self.views[previous].factors.track_id)
+                if previous is not None
+                else np.array([])
+            )
+            self.admission_report = {
+                "frame": frame,
+                "previous_camera": previous,
+                "candidates": len(measurement["view"]),
+                "selected": len(packet.view),
+                "previous_shared_tracks": len(shared),
+            }
+        return admitted
 
     def revoke(self, source, target):
         super().revoke(source, target)
@@ -190,6 +268,7 @@ class SharedEstimator(ObservationWelding):
             "associations": {f"{a}:{b}": accepted[a, b] for a, b in sorted(active)},
             "components": len(set(raw.values())),
             "unmeasured_cameras": sorted(set(graph.local) - set(keys)),
+            "admission": self.admission_report,
         }
         if not keys:
             graph.components = components
@@ -253,6 +332,10 @@ class SharedEstimator(ObservationWelding):
                 {keys.index(root) for root in raw.values()}
                 | (set(range(len(keys))) - set(used_cameras))
             )
+            if self.shared.linearization == "selective" and (
+                self.cache is None or edited
+            ):
+                self.cache = ObservationCache(self.shared.relinearization)
             revised, points, fit = solve_shared(
                 poses,
                 factors,
@@ -261,6 +344,9 @@ class SharedEstimator(ObservationWelding):
                 self.shared.solver,
                 rank_check_cameras=self.shared.rank_check_cameras,
                 require_full_rank=self.shared.require_full_rank,
+                cache=self.cache,
+                preconditioner=self.shared.preconditioner,
+                retry_linear_failure=self.shared.retry_linear_failure,
             )
             report.update(
                 fit,
@@ -286,6 +372,8 @@ class SharedEstimator(ObservationWelding):
                 self.estimates = dict(zip(sorted(selected), points, strict=True))
             elif edited:
                 self.estimates = {}
+            if fit["status"] == "rejected":
+                self.cache = None
         else:
             report.update(
                 status="unchanged",

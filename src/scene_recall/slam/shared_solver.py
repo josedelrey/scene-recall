@@ -1,8 +1,9 @@
 """Joint raw RGB-D IRLS with exact, matrix-free landmark elimination.
 
-Every solve relinearizes the supplied observations. Elimination is temporary,
-so no frozen marginal prior survives a historical correction or identity edit.
-Memory scales with observations, cameras and landmarks, not camera pairs.
+The default refreshes every derivative. An optional cache reuses selected
+endpoint derivatives while retaining exact current residuals and acceptance.
+Elimination is temporary and never leaves a frozen marginal prior. Storage
+scales with observations, cameras and landmarks, plus a bounded coarse matrix.
 """
 
 from dataclasses import replace
@@ -19,6 +20,7 @@ from scene_recall.multiview.batch_ba import (
 from scene_recall.multiview.fixed_landmarks import direct_cost
 from scene_recall.multiview.joint_ba import landmark_layout
 from scene_recall.multiview.pose_only import retract
+from scene_recall.slam.shared_preconditioner import CoarsePreconditioner
 
 
 class SchurOperator:
@@ -71,17 +73,27 @@ class SchurOperator:
         )
         return result[self.free].ravel()
 
-    def solve(self, tolerance=1e-8, max_iterations=1000):
-        """Checked block-Jacobi PCG with a true residual convergence test."""
+    def solve(self, tolerance=1e-8, max_iterations=1000, *, preconditioner="jacobi"):
+        """Checked Jacobi or two-level PCG with a true residual test."""
         if not len(self.rhs):
             return np.zeros((len(self.B), 6)), {
                 "iterations": 0,
                 "relative_residual": 0.0,
             }
-        preconditioner = np.linalg.inv(self.diagonal)
+        diagonal_inverse = np.linalg.inv(self.diagonal)
 
         def precondition(x):
-            return np.einsum("nij,nj->ni", preconditioner, x.reshape(-1, 6)).ravel()
+            return np.einsum("nij,nj->ni", diagonal_inverse, x.reshape(-1, 6)).ravel()
+
+        extra = {}
+        if preconditioner == "coarse":
+            precondition = CoarsePreconditioner(self)
+            extra = {
+                "preconditioner_bytes": precondition.nbytes,
+                "coarse_dimension": len(precondition.matrix),
+            }
+        elif preconditioner != "jacobi":
+            raise ValueError("unknown shared preconditioner")
 
         x = np.zeros_like(self.rhs)
         r = self.rhs.copy()
@@ -95,6 +107,7 @@ class SchurOperator:
                     dp = np.zeros((len(self.B), 6))
                     dp[self.free] = x.reshape(-1, 6)
                     return dp, {
+                        **extra,
                         "iterations": iteration,
                         "relative_residual": float(
                             np.linalg.norm(actual)
@@ -119,15 +132,27 @@ class SchurOperator:
 
 
 def solve_shared(
-    poses, factors, K, fixed, config, *, rank_check_cameras=24, require_full_rank=False
+    poses,
+    factors,
+    K,
+    fixed,
+    config,
+    *,
+    rank_check_cameras=24,
+    require_full_rank=False,
+    cache=None,
+    preconditioner="jacobi",
+    retry_linear_failure=False,
 ):
-    """Refine every supplied state together, rolling back on numerical failure.
+    """Refine every supplied state in one owned observation objective.
 
     Small systems receive an undamped global rank diagnostic. Larger systems
     inspect conditional blocks and explicitly lack a global rank certificate.
     The optional strict policy rejects a weak camera. Otherwise LM can update a
     partially observable system, selecting an initialization-dependent solution.
     Damping is algorithmic and is never retained as measurement information.
+    Numerical failures roll back the complete input by default. Optional linear
+    retries increase damping and can retain previously verified decreasing steps.
     """
     if (
         poses.ndim != 3
@@ -150,14 +175,24 @@ def solve_shared(
     accepted, linear_reports = [], []
     damping, first, reason = 0.001, None, "iteration limit"
     rank = {"scope": "global" if len(poses) <= rank_check_cameras else "blocks"}
+    if cache is not None:
+        cache.bind(factors, K, config.depth_model)
+    force_refresh = False
+    linear_failures = 0
 
     def rejected(message):
         return initial.copy(), seeds.copy(), {"status": "rejected", "reason": message}
 
     for iteration in range(config.max_iterations):
-        r, JP, JL = compact_linearize(
-            poses, points, factors, K, inverse, config.depth_model
-        )
+        if cache is None:
+            r, JP, JL = compact_linearize(
+                poses, points, factors, K, inverse, config.depth_model
+            )
+        else:
+            r, JP, JL = cache.linearize(
+                poses, points, inverse, force=force_refresh or require_full_rank
+            )
+            force_refresh = False
         cost, weights = direct_cost(r, factors, config)
         if not np.isfinite(cost):
             return rejected("invalid projections")
@@ -165,6 +200,8 @@ def solve_shared(
         blocks = compact_blocks(
             r, JP, JL, weights, inverse, factors.view, len(ids), len(poses)
         )
+        if cache is not None:
+            rank["jacobians_current"] = cache.last_fresh
         try:
             point_values = np.linalg.eigvalsh(blocks[2])
             if (
@@ -199,12 +236,22 @@ def solve_shared(
                 max(np.max(np.abs(blocks[3])), np.max(np.abs(undamped.rhs), initial=0))
                 < 1e-8
             ):
+                if cache is not None and not cache.last_fresh:
+                    force_refresh = True
+                    continue
                 reason = "stationary gradient"
                 break
             found = False
             for _ in range(10):
                 operator = SchurOperator(blocks, factors.view, inverse, fixed, damping)
-                dp, linear = operator.solve()
+                try:
+                    dp, linear = operator.solve(preconditioner=preconditioner)
+                except np.linalg.LinAlgError:
+                    if not retry_linear_failure:
+                        raise
+                    linear_failures += 1
+                    damping *= 10
+                    continue
                 dl = back_substitute(
                     dp, blocks, inverse, factors.view, operator.Ci, operator.b
                 )
@@ -229,10 +276,13 @@ def solve_shared(
                 ):
                     damping *= 10
                     continue
-                current = replace(factors, points=(points + dl)[inverse])
-                residual, _, _ = compact_linearize(
-                    trial, points + dl, current, K, inverse, config.depth_model
-                )
+                if cache is None:
+                    current = replace(factors, points=(points + dl)[inverse])
+                    residual, _, _ = compact_linearize(
+                        trial, points + dl, current, K, inverse, config.depth_model
+                    )
+                else:
+                    residual = cache.residual(trial, points + dl, inverse)
                 candidate, _ = direct_cost(residual, factors, config)
                 if np.isfinite(candidate) and candidate < cost:
                     poses, points = trial, points + dl
@@ -243,12 +293,18 @@ def solve_shared(
                     break
                 damping *= 10
             if not found:
+                if cache is not None and not cache.last_fresh:
+                    force_refresh = True
+                    continue
                 reason = "no acceptable step"
                 break
             if (
                 np.linalg.norm(dp) + np.linalg.norm(dl) < 1e-6
                 or (cost - candidate) / max(1, cost) < 1e-8
             ):
+                if cache is not None and not cache.last_fresh:
+                    force_refresh = True
+                    continue
                 reason = "small step or relative decrease"
                 break
         except np.linalg.LinAlgError as error:
@@ -264,6 +320,8 @@ def solve_shared(
             "final_cost": accepted[-1] if accepted else first,
             "accepted_costs": accepted,
             "linear_solves": linear_reports,
+            "linear_failures": linear_failures,
+            **({"linearization": cache.diagnostic()} if cache is not None else {}),
             "rank_check": rank,
             "max_camera_change_m": float(
                 np.linalg.norm(poses[:, :3, 3] - initial[:, :3, 3], axis=1).max()

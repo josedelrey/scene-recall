@@ -7,6 +7,11 @@ eviction. The previous sparse, online, local-joint and welding defaults remain
 unchanged. This backend is a coherent shared estimation experiment, with explicit
 limits on observability, measurement modeling and computation.
 
+The [incremental shared follow-up](incremental_shared_estimation.md) adds
+independently selectable derivative reuse, coarse Schur preconditioning and
+recent-view admission experiments. The complete method described here remains
+the reference and the default shared solver.
+
 ## Why replace the welding overlay
 
 The earlier [welding experiment](observation_level_welding.md) combines a pose

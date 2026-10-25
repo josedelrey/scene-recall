@@ -39,6 +39,16 @@ def main():
     parser.add_argument("--observation-welding", action="store_true")
     parser.add_argument("--shared-estimation", action="store_true")
     parser.add_argument(
+        "--shared-linearization", choices=("full", "selective"), default="full"
+    )
+    parser.add_argument(
+        "--shared-preconditioner", choices=("jacobi", "coarse"), default="jacobi"
+    )
+    parser.add_argument(
+        "--shared-admission", choices=("balanced", "covisibility"), default="balanced"
+    )
+    parser.add_argument("--shared-retry-linear-failure", action="store_true")
+    parser.add_argument(
         "--welding-feedback",
         choices=("camera", "landmark", "joint"),
         nargs="?",
@@ -69,6 +79,13 @@ def main():
         multiview_registration=args.multiview_registration,
         observation_welding=args.observation_welding,
         shared_estimation=args.shared_estimation,
+        shared=replace(
+            config.shared,
+            linearization=args.shared_linearization,
+            preconditioner=args.shared_preconditioner,
+            admission=args.shared_admission,
+            retry_linear_failure=args.shared_retry_linear_failure,
+        ),
         welding_feedback=args.welding_feedback,
         multiview_scope=args.multiview_scope,
         incremental_mapping=args.incremental_mapping,

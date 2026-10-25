@@ -16,11 +16,11 @@ from scene_recall.multiview.batch_ba import (
 )
 from scene_recall.multiview.fixed_landmarks import DirectFactors, direct_cost
 from scene_recall.multiview.joint_ba import landmark_layout
-from scene_recall.run_metadata import code_hash
+from scene_recall.run_metadata import code_hash, sha256
 from scene_recall.slam.shared_solver import SchurOperator
 
 
-def benchmark(cameras, topology):
+def benchmark(cameras, topology, preconditioner="jacobi"):
     rng = np.random.default_rng(310)
     K = np.array([[300, 0, 160], [0, 300, 120], [0, 0, 1.0]])
     count = 96 if topology == "long_tracks" else 16 * (cameras + 5)
@@ -63,13 +63,14 @@ def benchmark(cameras, topology):
     )
     linearized = perf_counter()
     operator = SchurOperator(blocks, views, inverse, (0,), 0.001)
-    dp, diagnostic = operator.solve()
+    dp, diagnostic = operator.solve(preconditioner=preconditioner)
     finished = perf_counter()
     return {
         "cameras": cameras,
         "observations": len(views),
         "landmarks": len(ids),
         "topology": topology,
+        "preconditioner": preconditioner,
         "linearization_seconds": linearized - started,
         "solve_seconds": finished - linearized,
         "compact_block_bytes": sum(array.nbytes for array in blocks),
@@ -83,10 +84,37 @@ def benchmark(cameras, topology):
     }
 
 
+def benchmark_blocks(path, preconditioner):
+    arrays = dict(np.load(path))
+    blocks = tuple(arrays[name] for name in ("B", "gp", "D", "gl", "E"))
+    started = perf_counter()
+    operator = SchurOperator(
+        blocks, arrays["views"], arrays["inverse"], arrays["fixed"], 0.001
+    )
+    dp, diagnostic = operator.solve(preconditioner=preconditioner)
+    elapsed = perf_counter() - started
+    return {
+        "preconditioner": preconditioner,
+        "solve_seconds": elapsed,
+        "cameras": len(blocks[0]),
+        "observations": len(arrays["views"]),
+        "landmarks": len(blocks[2]),
+        "step_norm": float(np.linalg.norm(dp)),
+        "blocks_sha256": sha256(path),
+        "source_sha256": str(arrays["source_sha256"]),
+        **diagnostic,
+    }, dp
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--cameras", type=int, nargs="+", default=[8, 32, 128, 512])
+    parser.add_argument(
+        "--preconditioners", nargs="+", choices=("jacobi", "coarse"), default=["jacobi"]
+    )
+    parser.add_argument("--blocks", type=Path)
+    parser.add_argument("--repeats", type=int, default=3)
     args = parser.parse_args()
     if args.output.exists():
         raise ValueError("choose a fresh benchmark output")
@@ -96,15 +124,43 @@ def main():
         "scope": "synthetic single linearization and checked damped step, not end-to-end SLAM or observability certification",
         "seed": 310,
         "cameras": args.cameras,
+        "preconditioners": args.preconditioners,
+        "driver_sha256": sha256(Path(__file__)),
     }
+    if args.blocks:
+        protocol.update(
+            scope="frozen real-ledger damped Schur steps with alternating method order, not nonlinear or causal accuracy",
+            blocks_sha256=sha256(args.blocks),
+            repeats=args.repeats,
+        )
     args.output.with_suffix(".protocol.json").write_text(
         json.dumps(protocol, indent=2) + "\n"
     )
-    results = [
-        benchmark(count, topology)
-        for topology in ("long_tracks", "chain")
-        for count in args.cameras
-    ]
+    if args.blocks:
+        if args.repeats < 1:
+            raise ValueError("benchmark repeats must be positive")
+        results, reference = [], None
+        for repeat in range(args.repeats):
+            order = (
+                args.preconditioners if repeat % 2 == 0 else args.preconditioners[::-1]
+            )
+            for preconditioner in order:
+                result, step = benchmark_blocks(args.blocks, preconditioner)
+                reference = step if reference is None else reference
+                result.update(
+                    repeat=repeat,
+                    max_step_difference_from_first=float(
+                        np.abs(step - reference).max()
+                    ),
+                )
+                results.append(result)
+    else:
+        results = [
+            benchmark(count, topology, preconditioner)
+            for preconditioner in args.preconditioners
+            for topology in ("long_tracks", "chain")
+            for count in args.cameras
+        ]
     args.output.write_text(
         json.dumps(
             {"protocol": protocol, "results": results}, indent=2, allow_nan=False

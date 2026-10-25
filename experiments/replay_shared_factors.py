@@ -9,6 +9,7 @@ import argparse
 import json
 from dataclasses import asdict, replace
 from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 
@@ -17,12 +18,22 @@ from scene_recall.multiview.batch_ba import BatchConfig, compact_linearize
 from scene_recall.multiview.fixed_landmarks import DirectFactors, direct_cost
 from scene_recall.multiview.joint_ba import landmark_layout
 from scene_recall.odometry.io import load_trajectory
-from scene_recall.run_metadata import code_hash, sha256
+from scene_recall.run_metadata import code_hash, peak_rss, sha256
 from scene_recall.slam.evaluation import score_components
+from scene_recall.slam.shared_linearization import ObservationCache
 from scene_recall.slam.shared_solver import solve_shared
 
 
-def replay(run, output, *, identity="live", depth_model="native", iterations=32):
+def replay(
+    run,
+    output,
+    *,
+    identity="live",
+    depth_model="native",
+    iterations=32,
+    preconditioner="jacobi",
+    selective=False,
+):
     if output.exists():
         raise ValueError("choose a fresh replay directory")
     report, rows = load_trajectory(run)
@@ -38,6 +49,8 @@ def replay(run, output, *, identity="live", depth_model="native", iterations=32)
         "driver_sha256": sha256(Path(__file__)),
         "identity": identity,
         "config": asdict(config),
+        "preconditioner": preconditioner,
+        "selective": selective,
     }
     output.mkdir(parents=True)
     (output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
@@ -102,8 +115,15 @@ def replay(run, output, *, identity="live", depth_model="native", iterations=32)
             parents[max(a, b)] = min(a, b)
     components = [root(key) for key in keys]
     fixed = [keys.index(key) for key in sorted(set(components))]
+    started = perf_counter()
     revised, points, diagnostic = solve_shared(
-        poses, factors, np.array(report["calibration"]["K_R"]), fixed, config
+        poses,
+        factors,
+        np.array(report["calibration"]["K_R"]),
+        fixed,
+        config,
+        preconditioner=preconditioner,
+        cache=ObservationCache() if selective else None,
     )
     ids, inverse, seeds = landmark_layout(factors)
 
@@ -131,6 +151,8 @@ def replay(run, output, *, identity="live", depth_model="native", iterations=32)
     result = {
         "protocol": protocol,
         "solver": diagnostic,
+        "solver_seconds": perf_counter() - started,
+        "peak_rss_mib": peak_rss(),
         "initial_costs": costs(poses, seeds),
         "final_costs": costs(revised, points),
         "external_keyframes_before": score_components(
@@ -167,6 +189,10 @@ def main():
     parser.add_argument("--identity", choices=("live", "native"), default="live")
     parser.add_argument("--depth-model", choices=("native", "axial"), default="native")
     parser.add_argument("--iterations", type=int, default=32)
+    parser.add_argument(
+        "--preconditioner", choices=("jacobi", "coarse"), default="jacobi"
+    )
+    parser.add_argument("--selective", action="store_true")
     args = parser.parse_args()
     replay(
         args.run,
@@ -174,6 +200,8 @@ def main():
         identity=args.identity,
         depth_model=args.depth_model,
         iterations=args.iterations,
+        preconditioner=args.preconditioner,
+        selective=args.selective,
     )
 
 

@@ -126,15 +126,7 @@ class ObservationWelding:
             for i, owner in enumerate(owners)
             if (segment, int(owner)) not in self.identity_map and native[i] >= 0
         ]
-        existing_order = self._spatial_order(measurement["pixels"], known)
-        new_order = self._spatial_order(measurement["pixels"], new)
-        half = self.config.max_observations_per_view // 2
-        order = [
-            *existing_order[:half],
-            *new_order[:half],
-            *existing_order[half:],
-            *new_order[half:],
-        ]
+        order = self._admission_order(segment, measurement, known, new)
         selected, used_native = [], set()
         for i in order:
             sample = int(native[i])
@@ -179,6 +171,12 @@ class ObservationWelding:
         self._next_identity = next_identity
         self.views[frame] = RecordedView(packet, feature_index, native_index, segment)
         return True
+
+    def _admission_order(self, segment, measurement, known, new):
+        existing = self._spatial_order(measurement["pixels"], known)
+        fresh = self._spatial_order(measurement["pixels"], new)
+        half = self.config.max_observations_per_view // 2
+        return [*existing[:half], *fresh[:half], *existing[half:], *fresh[half:]]
 
     def propose(self, source, target, first, second, T_target_source, ratio):
         """Record only fitting correspondences from an already verified loop."""
