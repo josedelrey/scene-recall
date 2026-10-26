@@ -11,6 +11,7 @@ from scene_recall.multiview.audit import normalized_spectrum
 from scene_recall.multiview.batch_ba import compact_blocks, compact_linearize
 from scene_recall.multiview.fixed_landmarks import DirectFactors, direct_cost
 from scene_recall.multiview.joint_ba import landmark_layout
+from scene_recall.multiview.pose_only import retract
 from scene_recall.slam.observation_welding import WeldingConfig
 from scene_recall.slam.shared_estimation import SharedConfig
 from scene_recall.slam.shared_linearization import (
@@ -80,6 +81,72 @@ def test_age_forces_relinearization_without_a_state_change():
     assert not cache.last_fresh
     cache.linearize(poses, points, inverse)
     assert cache.last_fresh
+
+
+@pytest.mark.parametrize("transport", [False, True])
+def test_reused_derivatives_preserve_current_rigid_gauge_only_with_transport(transport):
+    poses, factors, K, _ = objective()
+    _, inverse, points = landmark_layout(factors)
+    cache = ObservationCache(
+        RelinearizationConfig(
+            translation_m=1, rotation_deg=30, point_m=1, gauge_transport=transport
+        )
+    )
+    cache.bind(factors, K, "native")
+    cache.linearize(poses, points, inverse)
+    points[:, 0] += np.linspace(-0.01, 0.01, len(points))
+    _, JP, JL = cache.linearize(poses, points, inverse)
+    motion = np.array([0.1, -0.2, 0.3, 0.4, 0.2, -0.1])
+    point_motion = motion[:3] + np.cross(motion[3:], points)
+    residual = np.einsum("nbri,i->nbr", JP, motion) + np.einsum(
+        "nbri,ni->nbr", JL, point_motion[inverse]
+    )
+    if transport:
+        np.testing.assert_allclose(residual, 0, atol=2e-12)
+    else:
+        assert np.linalg.norm(residual) > 0.01
+
+
+def test_transported_native_derivatives_remain_exact_in_current_camera_chart():
+    poses, factors, K, _ = objective()
+    _, inverse, points = landmark_layout(factors)
+    cache = ObservationCache(
+        RelinearizationConfig(
+            translation_m=1, rotation_deg=30, point_m=1, gauge_transport=True
+        )
+    )
+    cache.bind(factors, K, "native")
+    cache.linearize(poses, points, inverse)
+    poses[1] = retract(poses[1], np.array([0, 0, 0, 0.002, -0.001, 0.003]))
+    actual = cache.linearize(poses, points, inverse)
+    reference = compact_linearize(poses, points, factors, K, inverse)
+    assert not cache.last_fresh
+    np.testing.assert_allclose(actual[0], reference[0], atol=1e-11)
+    np.testing.assert_allclose(actual[1][:, 1], reference[1][:, 1], atol=1e-11)
+    np.testing.assert_allclose(actual[2][:, 1], reference[2][:, 1], atol=1e-11)
+    fresh = cache.linearize(poses, points, inverse, force=True)
+    for a, b in zip(fresh, reference, strict=True):
+        np.testing.assert_allclose(a, b, atol=1e-11)
+
+
+def test_gauge_transport_is_exact_for_a_finite_world_chart_change():
+    poses, factors, K, _ = objective()
+    _, inverse, points = landmark_layout(factors)
+    cache = ObservationCache(
+        RelinearizationConfig(
+            translation_m=1, rotation_deg=30, point_m=1, gauge_transport=True
+        )
+    )
+    cache.bind(factors, K, "native")
+    cache.linearize(poses, points, inverse)
+    chart = retract(np.eye(4), np.array([0.03, -0.02, 0.01, 0.05, -0.02, 0.04]))
+    poses = chart @ poses
+    points = transform_points(points, chart)
+    actual = cache.linearize(poses, points, inverse)
+    expected = compact_linearize(poses, points, factors, K, inverse)
+    assert not cache.last_fresh
+    for a, b in zip(actual, expected, strict=True):
+        np.testing.assert_allclose(a, b, atol=1e-10)
 
 
 def test_subthreshold_movements_accumulate_from_last_refresh():

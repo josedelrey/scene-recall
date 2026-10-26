@@ -104,6 +104,8 @@ class OnlineConfig:
             raise ValueError("welding feedback requires observation welding")
         if not isinstance(self.shared, SharedConfig):
             raise TypeError("invalid shared estimation configuration")
+        if self.local.support.enabled and not self.shared_estimation:
+            raise ValueError("support keyframes require shared estimation")
         if self.shared_estimation:
             if (
                 self.local.optimize
@@ -181,6 +183,7 @@ class OnlineSLAM:
                 and self.config.multiview_scope == "all"
             ),
             feature_extractor=feature_extractor,
+            support=self.config.local.support,
         )
         frontend.recovery_enabled = self.config.recovery
         self.local.frontend = frontend
@@ -430,6 +433,35 @@ class OnlineSLAM:
                 self.pending_solve = True
         return events
 
+    def _reobserve(self, frame, segment, features):
+        """Recover short-range identities without adding another measurement."""
+        if not self.config.shared_estimation or not self.config.shared.reobserve_recent:
+            return []
+        candidates = sorted(
+            (
+                key
+                for key in self.bank
+                if self.graph.segments[key] == segment
+                and frame - key < self.config.same_segment_gap
+                and key in self.welding.views
+            ),
+            reverse=True,
+        )[: self.config.shared.reobserve_recent]
+        events = []
+        for source in candidates:
+            result = self.welding.reobserve(
+                source, frame, self.bank[source][0], features, self.registration
+            )
+            events.append(
+                {
+                    "source": source,
+                    "target": frame,
+                    "status": "recent_reobservation",
+                    "reobservation": result,
+                }
+            )
+        return events
+
     def _remember(self, frame, features):
         signature = appearance_signature(features)
         if (
@@ -636,12 +668,39 @@ class OnlineSLAM:
         if admitted and self.welding is not None:
             self.welding.admit(frame, segment, self.local.last_raw_measurement)
             if self.config.shared_estimation:
+                if self.config.shared.tracker_exposure:
+                    self.local.frontend.exposure_transforms = {
+                        key: self.welding.views[key].factors.T_RcD[0]
+                        for key in self.local.frontend.keyframes
+                        if key in self.welding.views
+                    }
+                view = self.welding.views.get(frame)
+                if view is not None and self.config.local.support.enabled:
+                    measurement = self.local.last_raw_measurement
+                    owners = dict(
+                        zip(
+                            measurement["feature_index"],
+                            measurement["frontend_identity"],
+                            strict=True,
+                        )
+                    )
+                    self.local.frontend.retain_support(
+                        frame,
+                        [
+                            owners[int(feature)]
+                            for feature, native in zip(
+                                view.feature_index, view.native_index, strict=True
+                            )
+                            if native >= 0
+                        ],
+                    )
                 self.pending_solve = True
         self.anchors.append(self.segment_nodes.get(segment))
         features = self.local.frontend._previous[1]
         events = invalidations
         query_start = perf_counter()
         if admitted:
+            events.extend(self._reobserve(frame, segment, features))
             if self.config.loops:
                 events.extend(self._recognize(frame, segment, features))
             self._remember(frame, features)
@@ -700,7 +759,16 @@ class OnlineSLAM:
 
     def revoke(self, source, target, reason):
         """Revoke a raw loop and publish disconnection before accepting more data."""
-        self.graph.revoke(source, target, reason)
+        recent = (
+            self.config.shared_estimation
+            and (source, target) in self.welding.reobservations
+        )
+        edge = self.graph.edges.get((source, target))
+        if recent and (edge is None or edge.kind != "loop"):
+            if not isinstance(reason, str) or not reason.strip():
+                raise ValueError("revocation requires an explicit reason")
+        else:
+            self.graph.revoke(source, target, reason)
         if self.welding is not None:
             self.welding.revoke(source, target)
         self.conditioning.pop((source, target), None)

@@ -19,8 +19,11 @@ class RelinearizationConfig:
     rotation_deg: float = 0.1
     point_m: float = 0.002
     max_age: int = 8
+    gauge_transport: bool = False
 
     def __post_init__(self):
+        if not isinstance(self.gauge_transport, bool):
+            raise TypeError("Jacobian gauge transport must be boolean")
         for name in ("translation_m", "rotation_deg", "point_m"):
             value = getattr(self, name)
             if not np.isfinite(value) or value < 0:
@@ -150,6 +153,20 @@ class ObservationCache:
         self.refreshed += int(refresh.sum())
         self.evaluated += len(refresh)
         self.last_fresh = bool(refresh.all())
+        if self.config.gauge_transport and not self.last_fresh:
+            # Reuse the local RGB projection derivative, then express it in the
+            # current camera chart. Native depth derivatives are cheap and exact.
+            # Enforce JP = JL [-I, skew(X_current)] for every reused row so that
+            # common rigid camera and point motions remain exact null modes.
+            stale = ~refresh
+            JL, JP = old["JL"].copy(), old["JP"].copy()
+            local = old["JL"][stale] @ old["pose"][stale, None, :3, :3]
+            JL[stale] = local @ R[stale, None]
+            JL[stale, 1] = self.native_derivative[stale] @ R[stale]
+            JP[stale] = np.concatenate(
+                (-JL[stale], JL[stale] @ skew(world[stale])[:, None]), axis=3
+            )
+            return residual, JP, JL
         return residual, old["JP"], old["JL"]
 
     def diagnostic(self):
@@ -157,6 +174,7 @@ class ObservationCache:
             "jacobian_observations": self.refreshed,
             "evaluated_observations": self.evaluated,
             "full_refreshes": self.full_refreshes,
+            "gauge_transport": self.config.gauge_transport,
             "cache_bytes": sum(value.nbytes for value in self.arrays.values()),
             "reused_fraction": 1 - self.refreshed / max(1, self.evaluated),
         }

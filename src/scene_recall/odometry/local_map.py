@@ -351,6 +351,20 @@ class LocalMapRGBDBackend:
             )
             owners[feature] = identity
 
+    def _needs_keyframe(self, index, features, pose, matches, calibration, diagnostics):
+        last = next(reversed(self.keyframes.values()))
+        gap = index - last.frame_index
+        translation, rotation = pose_error(
+            pose @ np.linalg.inv(calibration.T_RD), last.T_SR
+        )
+        overlap = len(matches) / max(1, int((self.owners[last.frame_index] >= 0).sum()))
+        return gap >= self.config.min_keyframe_gap and (
+            gap >= self.config.max_keyframe_gap
+            or translation >= self.config.keyframe_translation_m
+            or rotation >= self.config.keyframe_rotation_deg
+            or overlap < self.config.keyframe_overlap
+        )
+
     def estimate(self, source, target, calibration):
         started = perf_counter()
         if target.frame_index != source.frame_index + 1:
@@ -413,19 +427,8 @@ class LocalMapRGBDBackend:
             self._bootstrap(target, features, calibration)
         else:
             self._pose = pose
-            last = next(reversed(self.keyframes.values()))
-            gap = target.frame_index - last.frame_index
-            translation, rotation = pose_error(
-                pose @ np.linalg.inv(calibration.T_RD), last.T_SR
-            )
-            overlap = len(matches) / max(
-                1, int((self.owners[last.frame_index] >= 0).sum())
-            )
-            inserted = gap >= self.config.min_keyframe_gap and (
-                gap >= self.config.max_keyframe_gap
-                or translation >= self.config.keyframe_translation_m
-                or rotation >= self.config.keyframe_rotation_deg
-                or overlap < self.config.keyframe_overlap
+            inserted = self._needs_keyframe(
+                target.frame_index, features, pose, matches, calibration, diagnostics
             )
             if inserted:
                 self._insert(

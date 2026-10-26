@@ -30,8 +30,9 @@ class RecoveryFrontend(RevisionFrontend):
         feature_extractor=None,
         registration=None,
         multiview=False,
+        support=None,
     ):
-        super().__init__(config)
+        super().__init__(config, support=support)
         self.horizon, self.candidates = horizon, candidates
         self.registration = registration or RegistrationConfig()
         self.multiview = multiview

@@ -26,6 +26,7 @@ from scene_recall.odometry.pipeline import PairEstimate
 from scene_recall.odometry.recent_map import RecentMapConfig, RecentMapRGBDBackend
 from scene_recall.slam.graph import marginalize_oldest, solve_window
 from scene_recall.slam.marginal import marginalize, prior_supports_camera
+from scene_recall.slam.support import SupportConfig, metric_support
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class SLAMConfig:
         )
     )
     timing: TimingConfig = field(default_factory=TimingConfig)
+    support: SupportConfig = field(default_factory=SupportConfig)
 
     def __post_init__(self):
         for name, lower in (
@@ -82,10 +84,62 @@ class SLAMConfig:
             self.timing, TimingConfig
         ):
             raise TypeError("invalid SLAM configuration")
+        if not isinstance(self.support, SupportConfig):
+            raise TypeError("invalid support configuration")
 
 
 class RevisionFrontend(RecentMapRGBDBackend):
     """Isolate access to legacy frontend internals at this experimental boundary."""
+
+    def __init__(self, config=None, *, support=None):
+        super().__init__(config)
+        self.support_policy = support or SupportConfig()
+        self.retained_support = None
+        self.exposure_transforms = {}
+
+    def _bootstrap(self, observation, features, calibration):
+        self.retained_support = None
+        self.exposure_transforms = {}
+        super()._bootstrap(observation, features, calibration)
+
+    def _pixel_pose(self, frame_id, frame, calibration):
+        exposure = self.exposure_transforms.get(frame_id)
+        if exposure is None or np.array_equal(exposure, calibration.T_RD):
+            return frame.T_SR
+        # Native tracker points retain their virtual depth-time RGB chart.
+        # Only the pixel projection uses the actual retained color exposure.
+        return frame.T_SR @ calibration.T_RD @ np.linalg.inv(exposure)
+
+    def retain_support(self, frame, owners):
+        """Monitor only native owners actually admitted to the shared ledger."""
+        self.retained_support = frame, frozenset(map(int, owners))
+
+    def _needs_keyframe(self, index, features, pose, matches, calibration, diagnostics):
+        scheduled = super()._needs_keyframe(
+            index, features, pose, matches, calibration, diagnostics
+        )
+        if not self.support_policy.enabled or self.retained_support is None:
+            return scheduled
+        frame, owners = self.retained_support
+        indices = [feature for owner, feature in matches if owner in owners]
+        support = metric_support(features.points_R[indices])
+        required = min(
+            self.support_policy.minimum,
+            max(3, int(np.ceil(len(owners) * self.support_policy.retained_fraction))),
+        )
+        weak = (
+            support["count"] < required
+            or support["rotation_rank"] < 3
+            or support["spread"] < self.support_policy.minimum_spread
+        )
+        diagnostics["retained_support"] = {
+            **support,
+            "source": frame,
+            "source_native_owners": len(owners),
+            "required": required,
+            "early_keyframe": bool(weak and not scheduled),
+        }
+        return scheduled or weak
 
     def start(self, observation, calibration):
         features = self._extract(observation, calibration)
@@ -137,7 +191,8 @@ class IncrementalSLAM:
                 max_keyframes=self.config.window_size,
                 min_keyframe_gap=self.config.keyframe_interval,
                 max_keyframe_gap=self.config.keyframe_interval,
-            )
+            ),
+            support=self.config.support,
         )
         self.previous = None
         self.previous_pose = np.eye(4)

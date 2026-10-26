@@ -48,6 +48,10 @@ def main():
         "--shared-admission", choices=("balanced", "covisibility"), default="balanced"
     )
     parser.add_argument("--shared-retry-linear-failure", action="store_true")
+    parser.add_argument("--support-keyframes", action="store_true")
+    parser.add_argument("--shared-gauge-transport", action="store_true")
+    parser.add_argument("--shared-reobserve-recent", type=int, default=0)
+    parser.add_argument("--shared-tracker-exposure", action="store_true")
     parser.add_argument(
         "--welding-feedback",
         choices=("camera", "landmark", "joint"),
@@ -68,7 +72,10 @@ def main():
     config = replace(
         config,
         local=replace(
-            config.local, optimize=args.optimize_local, exposure=args.local_exposure
+            config.local,
+            optimize=args.optimize_local,
+            exposure=args.local_exposure,
+            support=replace(config.local.support, enabled=args.support_keyframes),
         ),
         recovery=not args.no_recovery,
         loops=not args.no_loops,
@@ -85,6 +92,12 @@ def main():
             preconditioner=args.shared_preconditioner,
             admission=args.shared_admission,
             retry_linear_failure=args.shared_retry_linear_failure,
+            reobserve_recent=args.shared_reobserve_recent,
+            tracker_exposure=args.shared_tracker_exposure,
+            relinearization=replace(
+                config.shared.relinearization,
+                gauge_transport=args.shared_gauge_transport,
+            ),
         ),
         welding_feedback=args.welding_feedback,
         multiview_scope=args.multiview_scope,

@@ -7,6 +7,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 import numpy as np
+from shared_map_support import surface_support
 from summarize_local_map_reliability import geometry_scores
 
 from scene_recall.datasets.replay import (
@@ -28,11 +29,19 @@ def evaluate(
     tolerance_m=0.0,
     reference_cohort="strict",
     extent="prefix",
+    training_stride=10,
+    reverse_support=False,
 ):
     if reference_cohort not in ("strict", "available"):
         raise ValueError("unsupported reference cohort")
     if extent not in ("prefix", "full"):
         raise ValueError("unsupported map evaluation extent")
+    if (
+        isinstance(training_stride, bool)
+        or not isinstance(training_stride, int)
+        or training_stride < 2
+    ):
+        raise ValueError("training stride must be an integer >= 2")
     if not np.isfinite(tolerance_m) or tolerance_m < 0:
         raise ValueError("audit tolerance must be finite and nonnegative")
     if output.exists():
@@ -43,15 +52,17 @@ def evaluate(
         raise ValueError("map evaluation policies have different source inputs")
     config = MappingConfig(pixel_stride=8)
     count = len(rows) if extent == "full" else min(len(rows), 240)
-    train = list(range(0, count, 10))
-    targets = list(range(5, count, 10))
+    train = list(range(0, count, training_stride))
+    targets = list(range(training_stride // 2, count, training_stride))
     missing_training = [i for i in train if rows[i].reference_pose is None]
     if reference_cohort == "available":
         train = [i for i in train if i not in missing_training]
     output.mkdir(parents=True)
     protocol = {
         "phase": "frozen before reconstruction scoring",
-        "scope": "end-of-stream online map version, fixed stride-10 training views and interleaved reference targets",
+        "scope": f"end-of-stream online map version, fixed stride-{training_stride} training views and interleaved reference targets",
+        "training_stride": training_stride,
+        "reverse_support": reverse_support,
         "evaluation_extent": extent,
         "train": train,
         "reference_cohort": reference_cohort,
@@ -249,6 +260,16 @@ def evaluate(
                 },
             ),
         }
+        if reverse_support:
+            heldout = [
+                (root @ rows[i].reference_pose, target_samples[i].depth)
+                for i in targets
+                if rows[i].reference_pose is not None
+            ]
+            result["surface_support"] = {
+                policy: surface_support(cloud.points, heldout, reader.calibration.K_D)
+                for policy, cloud in clouds.items()
+            }
     (output / "report.json").write_text(
         json.dumps(result, indent=2, allow_nan=False) + "\n"
     )
@@ -262,6 +283,8 @@ def main():
     parser.add_argument("--policies", nargs="+", default=["local", "online"])
     parser.add_argument("--audit-tolerance-m", type=float, default=0.0)
     parser.add_argument("--extent", choices=("prefix", "full"), default="prefix")
+    parser.add_argument("--training-stride", type=int, default=10)
+    parser.add_argument("--reverse-support", action="store_true")
     parser.add_argument(
         "--reference-cohort", choices=("strict", "available"), default="strict"
     )
@@ -273,6 +296,8 @@ def main():
         tolerance_m=args.audit_tolerance_m,
         reference_cohort=args.reference_cohort,
         extent=args.extent,
+        training_stride=args.training_stride,
+        reverse_support=args.reverse_support,
     )
 
 

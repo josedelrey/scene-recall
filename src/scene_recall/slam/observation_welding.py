@@ -178,12 +178,24 @@ class ObservationWelding:
         half = self.config.max_observations_per_view // 2
         return [*existing[:half], *fresh[:half], *existing[half:], *fresh[half:]]
 
-    def propose(self, source, target, first, second, T_target_source, ratio):
+    def propose(
+        self,
+        source,
+        target,
+        first,
+        second,
+        T_target_source,
+        ratio,
+        *,
+        symmetric_native=False,
+    ):
         """Record only fitting correspondences from an already verified loop."""
         if source not in self.views or target not in self.views:
             return {"status": "unavailable", "associations": 0}
         pairs, _ = match_descriptors(first.descriptors, second.descriptors, ratio)
         pairs = pairs[np.isfinite(first.points_R[pairs[:, 0]]).all(axis=1)]
+        if symmetric_native:
+            pairs = pairs[np.isfinite(second.points_R[pairs[:, 1]]).all(axis=1)]
         rows_a = {
             int(feature): i
             for i, feature in enumerate(self.views[source].feature_index)

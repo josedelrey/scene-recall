@@ -137,6 +137,10 @@ class RecentMapRGBDBackend(LocalMapRGBDBackend):
             proposals += self._search(features)
         return merge_proposals(proposals)
 
+    def _pixel_pose(self, frame_id, frame, calibration):
+        """Camera chart used only for historical image observations."""
+        return frame.T_SR
+
     def _valid_points(self, ids, points, calibration):
         """Vectorized all-active-view check for candidate segment-frame points."""
         valid = np.isfinite(points).all(axis=1)
@@ -158,7 +162,7 @@ class RecentMapRGBDBackend(LocalMapRGBDBackend):
                 points[indices],
                 frame.features.pixels[features],
                 calibration.K_R,
-                np.linalg.inv(frame.T_SR),
+                np.linalg.inv(self._pixel_pose(frame_id, frame, calibration)),
             )
             measured = frame.features.points_R[features]
             has_depth = np.isfinite(measured).all(axis=1)

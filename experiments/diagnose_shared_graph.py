@@ -25,10 +25,13 @@ from scene_recall.multiview.joint_ba import landmark_layout
 from scene_recall.odometry.evaluation import error_statistics
 from scene_recall.odometry.io import load_trajectory
 from scene_recall.run_metadata import code_hash, sha256
+from scene_recall.slam.observability import rigid_cut_information
 from scene_recall.slam.shared_solver import SchurOperator
 
 
-def diagnose(run, *, blocks_output=None, global_rank=False, region=None):
+def diagnose(
+    run, *, blocks_output=None, global_rank=False, region=None, rank_limit=2048
+):
     report, rows = load_trajectory(run)
     path = run / "shared_estimation.npz"
     arrays = dict(np.load(path))
@@ -168,8 +171,10 @@ def diagnose(run, *, blocks_output=None, global_rank=False, region=None):
     if global_rank:
         conditioned = SchurOperator(blocks, factors.view, inverse, sorted(fixed), 0)
         dimension = len(conditioned.rhs)
-        if dimension > 2048:
-            raise ValueError("offline dense rank diagnostic exceeds 2048 dimensions")
+        if dimension > rank_limit:
+            raise ValueError(
+                f"offline dense rank diagnostic exceeds {rank_limit} dimensions"
+            )
         S = np.column_stack([conditioned.multiply(row) for row in np.eye(dimension)])
         S = (S + S.T) / 2
         global_information = normalized_spectrum(S)
@@ -216,6 +221,16 @@ def diagnose(run, *, blocks_output=None, global_rank=False, region=None):
         region_information = {
             "received_frame_interval": list(region),
             "recorded_cameras": sorted(map(int, set(views[inside]))),
+            "rigid_cut": rigid_cut_information(
+                blocks,
+                factors.view,
+                inverse,
+                (keys >= region[0]) & (keys < region[1]),
+                center=positions.mean(axis=0) if len(positions) else np.zeros(3),
+            ),
+            "fixed_cameras_inside": [
+                int(keys[i]) for i in sorted(fixed) if region[0] <= keys[i] < region[1]
+            ],
             "boundary_landmarks": [
                 {"identity": int(track), "observers": observers[int(track)]}
                 for track in boundary
@@ -266,6 +281,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--blocks-output", type=Path)
     parser.add_argument("--global-rank", action="store_true")
+    parser.add_argument("--rank-limit", type=int, default=2048)
     parser.add_argument(
         "--region", type=int, nargs=2, help="received frame interval, stop exclusive"
     )
@@ -279,6 +295,7 @@ def main():
                 blocks_output=args.blocks_output,
                 global_rank=args.global_rank,
                 region=args.region,
+                rank_limit=args.rank_limit,
             ),
             indent=2,
             allow_nan=False,

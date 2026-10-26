@@ -531,3 +531,8 @@ induced correlations while avoiding fabricated information in weak directions.
 The complete raw solver and the matched numerical audits remain the reference
 for evaluating that replacement. The current results support keeping every new
 policy experimental.
+
+The [geometric support follow-up](observable_shared_estimation.md) investigates
+these collective failures with support-aware retention, reversible native
+reobservation, gauge-preserving derivative transport and exposure-chart controls.
+It reports complete causal results and retains the complete solver as reference.

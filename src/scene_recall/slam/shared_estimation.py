@@ -9,10 +9,13 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from scene_recall.features import RGBDFeatures
 from scene_recall.geometry.camera import transform_points
 from scene_recall.multiview.batch_ba import BatchConfig
 from scene_recall.multiview.fixed_landmarks import DirectFactors
+from scene_recall.multiview.tracking import match_descriptors
 from scene_recall.slam.observation_welding import ObservationWelding
+from scene_recall.slam.registration import register_correspondences
 from scene_recall.slam.shared_linearization import (
     ObservationCache,
     RelinearizationConfig,
@@ -32,6 +35,8 @@ class SharedConfig:
     preconditioner: str = "jacobi"
     admission: str = "balanced"
     retry_linear_failure: bool = False
+    reobserve_recent: int = 0
+    tracker_exposure: bool = False
 
     def __post_init__(self):
         if not isinstance(self.solver, BatchConfig):
@@ -46,6 +51,14 @@ class SharedConfig:
             raise ValueError("unknown shared admission policy")
         if not isinstance(self.retry_linear_failure, bool):
             raise TypeError("shared linear retry policy must be boolean")
+        if not isinstance(self.tracker_exposure, bool):
+            raise TypeError("tracker exposure policy must be boolean")
+        if (
+            isinstance(self.reobserve_recent, bool)
+            or not isinstance(self.reobserve_recent, int)
+            or not 0 <= self.reobserve_recent <= 8
+        ):
+            raise ValueError("recent reobservation budget must be an integer in [0, 8]")
         if not isinstance(self.require_full_rank, bool):
             raise TypeError("shared rank policy must be boolean")
         if (
@@ -77,6 +90,75 @@ class SharedEstimator(ObservationWelding):
         self.track_components = {}
         self.cache = None
         self.admission_report = {}
+        self.reobservations = {}
+
+    def _native_features(self, frame, features):
+        view = self.views[frame]
+        points = np.full_like(features.points_R, np.nan)
+        native = np.isfinite(view.factors.native_points).all(axis=1)
+        packet = view.factors
+        # Registration and the shared objective use the same retained native
+        # samples and immutable per-observation exposure transforms.
+        points[view.feature_index[native]] = (
+            np.einsum(
+                "nij,nj->ni", packet.T_RcD[native, :3, :3], packet.native_points[native]
+            )
+            + packet.T_RcD[native, :3, 3]
+        )
+        return RGBDFeatures(
+            features.pixels, features.descriptors, points, features.descriptor_family
+        )
+
+    def reobserve(self, source, target, first, second, registration):
+        """Verify a short-range identity proposal using only owned native data."""
+        if source not in self.views or target not in self.views:
+            return {"status": "unavailable"}
+        if source >= target:
+            raise ValueError("recent reobservation requires an earlier source camera")
+        if self.views[source].segment != self.views[target].segment:
+            raise ValueError("recent reobservation cannot bypass loop confirmation")
+        if (source, target) in self.associations:
+            return {"status": "already_proposed"}
+        first = self._native_features(source, first)
+        second = self._native_features(target, second)
+        pairs, _ = match_descriptors(
+            first.descriptors, second.descriptors, registration.ratio
+        )
+        pairs = pairs[
+            np.isfinite(first.points_R[pairs[:, 0]]).all(axis=1)
+            & np.isfinite(second.points_R[pairs[:, 1]]).all(axis=1)
+        ]
+        a, b = pairs.T
+        result = register_correspondences(
+            first.points_R[a],
+            second.points_R[b],
+            first.pixels[a],
+            second.pixels[b],
+            self.calibration.K_R,
+            self.calibration.rgb_shape,
+            registration,
+        )
+        report = {"verification": result.diagnostics}
+        if result.T_target_source is None:
+            return {**report, "status": "registration_rejected"}
+        proposed = self.propose(
+            source,
+            target,
+            first,
+            second,
+            result.T_target_source,
+            registration.ratio,
+            symmetric_native=True,
+        )
+        if proposed["status"] == "admitted":
+            transform = (
+                np.linalg.inv(self.views[target].factors.T_RcD[0])
+                @ result.T_target_source
+                @ self.views[source].factors.T_RcD[0]
+            )
+            transform.setflags(write=False)
+            self.reobservations[source, target] = transform
+        return {**report, **proposed}
 
     def _admission_order(self, segment, measurement, known, new):
         if self.shared.admission == "balanced":
@@ -134,6 +216,7 @@ class SharedEstimator(ObservationWelding):
 
     def revoke(self, source, target):
         super().revoke(source, target)
+        self.reobservations.pop((source, target), None)
         # A union split can change every correlated variable. Rebuild its seeds
         # from raw observations instead of retaining a merged point or prior.
         self._partition = None
@@ -206,7 +289,11 @@ class SharedEstimator(ObservationWelding):
             a, b = root(graph.components[source]), root(graph.components[target])
             if a == b:
                 continue
-            measurement = graph.edges[source, target].T_target_source
+            measurement = (
+                self.reobservations[source, target]
+                if (source, target) in self.reobservations
+                else graph.edges[source, target].T_target_source
+            )
             if a < b:
                 correction = (
                     placement[source]
@@ -225,11 +312,14 @@ class SharedEstimator(ObservationWelding):
         return placement
 
     def refine(self, graph, rejected=()):
-        active = {
-            key
-            for key, edge in graph.edges.items()
-            if edge.kind == "loop" and key in self.associations
-        } - set(rejected)
+        active = (
+            {
+                key
+                for key, edge in graph.edges.items()
+                if edge.kind == "loop" and key in self.associations
+            }
+            | self.reobservations.keys()
+        ) - set(rejected)
         identities, accepted = self._identities(active)
         active = {
             edge for edge in active if accepted[edge] >= self.config.min_associations
@@ -269,6 +359,9 @@ class SharedEstimator(ObservationWelding):
             "components": len(set(raw.values())),
             "unmeasured_cameras": sorted(set(graph.local) - set(keys)),
             "admission": self.admission_report,
+            "recent_reobservations": [
+                list(edge) for edge in sorted(active) if edge in self.reobservations
+            ],
         }
         if not keys:
             graph.components = components
@@ -455,4 +548,11 @@ class SharedEstimator(ObservationWelding):
             ],
             dtype=np.int64,
         ).reshape(-1, 4)
+        if self.reobservations:
+            arrays["reobservation_edges"] = np.array(
+                sorted(self.reobservations), dtype=np.int64
+            )
+            arrays["reobservation_transforms"] = np.array(
+                [self.reobservations[edge] for edge in sorted(self.reobservations)]
+            )
         return arrays

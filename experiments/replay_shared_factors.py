@@ -20,7 +20,10 @@ from scene_recall.multiview.joint_ba import landmark_layout
 from scene_recall.odometry.io import load_trajectory
 from scene_recall.run_metadata import code_hash, peak_rss, sha256
 from scene_recall.slam.evaluation import score_components
-from scene_recall.slam.shared_linearization import ObservationCache
+from scene_recall.slam.shared_linearization import (
+    ObservationCache,
+    RelinearizationConfig,
+)
 from scene_recall.slam.shared_solver import solve_shared
 
 
@@ -33,6 +36,7 @@ def replay(
     iterations=32,
     preconditioner="jacobi",
     selective=False,
+    gauge_transport=False,
 ):
     if output.exists():
         raise ValueError("choose a fresh replay directory")
@@ -51,6 +55,7 @@ def replay(
         "config": asdict(config),
         "preconditioner": preconditioner,
         "selective": selective,
+        "gauge_transport": gauge_transport,
     }
     output.mkdir(parents=True)
     (output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
@@ -123,7 +128,9 @@ def replay(
         fixed,
         config,
         preconditioner=preconditioner,
-        cache=ObservationCache() if selective else None,
+        cache=ObservationCache(RelinearizationConfig(gauge_transport=gauge_transport))
+        if selective
+        else None,
     )
     ids, inverse, seeds = landmark_layout(factors)
 
@@ -193,6 +200,7 @@ def main():
         "--preconditioner", choices=("jacobi", "coarse"), default="jacobi"
     )
     parser.add_argument("--selective", action="store_true")
+    parser.add_argument("--gauge-transport", action="store_true")
     args = parser.parse_args()
     replay(
         args.run,
@@ -202,6 +210,7 @@ def main():
         iterations=args.iterations,
         preconditioner=args.preconditioner,
         selective=args.selective,
+        gauge_transport=args.gauge_transport,
     )
 
 
