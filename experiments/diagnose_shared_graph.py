@@ -30,7 +30,13 @@ from scene_recall.slam.shared_solver import SchurOperator
 
 
 def diagnose(
-    run, *, blocks_output=None, global_rank=False, region=None, rank_limit=2048
+    run,
+    *,
+    blocks_output=None,
+    global_rank=False,
+    region=None,
+    rank_limit=2048,
+    native_initialized_only=False,
 ):
     report, rows = load_trajectory(run)
     path = run / "shared_estimation.npz"
@@ -88,10 +94,14 @@ def diagnose(
     depth_classes = set(live[native])
     for frame, track in zip(views, live, strict=True):
         observers[int(track)].append(int(frame))
+    initialized_bearings = (
+        set() if native_initialized_only else set(arrays.get("bearing_seed_ids", ()))
+    )
     selected = {
         track
         for track, frames in observers.items()
-        if len(frames) >= 2 and track in depth_classes
+        if len(frames) >= 2
+        and (track in depth_classes or track in initialized_bearings)
     }
     mask = np.isin(live, list(selected))
     packet = {name: arrays[name][mask] for name in DirectFactors.__dataclass_fields__}
@@ -107,6 +117,12 @@ def diagnose(
         ]
     )
     seeds = dict(zip(arrays["point_ids"], arrays["point_positions"], strict=True))
+    for track, point in zip(
+        arrays.get("bearing_seed_ids", ()),
+        arrays.get("bearing_seed_points", ()),
+        strict=True,
+    ):
+        seeds.setdefault(int(track), point)
     for frame, track, point in zip(
         views[native], live[native], arrays["native_points"][native], strict=True
     ):
@@ -124,6 +140,52 @@ def diagnose(
         inverse,
         config.depth_model,
     )
+    if r is None:
+        color = np.einsum(
+            "nji,nj->ni",
+            poses[factors.view, :3, :3],
+            factors.points - poses[factors.view, :3, 3],
+        )
+        exposure = np.linalg.inv(factors.T_RcD)
+        depth = np.einsum("nij,nj->ni", exposure[:, :3, :3], color) + exposure[:, :3, 3]
+        invalid = (
+            ~np.isfinite(color).all(axis=1)
+            | (color[:, 2] <= 0.05)
+            | (native[mask] & (depth[:, 2] <= 0.05))
+        )
+        return {
+            "source_sha256": sha256(path),
+            "source_report_sha256": sha256(run / "report.json"),
+            "package_sha256": code_hash(),
+            "driver_sha256": sha256(Path(__file__)),
+            "status": "unavailable",
+            "native_initialized_only": native_initialized_only,
+            "reason": "invalid projections at saved or reconstructed point state",
+            "active_observations": len(factors.view),
+            "invalid_observations": int(invalid.sum()),
+            "invalid_rows": [
+                {
+                    "frame": int(frame),
+                    "feature": int(feature),
+                    "identity": int(identity),
+                    "color_z_m": float(zr) if np.isfinite(zr) else None,
+                    "native_z_m": float(zd) if np.isfinite(zd) else None,
+                    "has_native": bool(bound),
+                }
+                for frame, feature, identity, zr, zd, bound in zip(
+                    views[mask][invalid],
+                    arrays["feature_index"][mask][invalid],
+                    live[mask][invalid],
+                    color[invalid, 2],
+                    depth[invalid, 2],
+                    native[mask][invalid],
+                    strict=True,
+                )
+            ],
+            "global_information": None,
+            "region_information": None,
+            "caveat": "no rank certificate is computed by dropping invalid rows from the attempted objective",
+        }
     cost, weights = direct_cost(r, factors, config)
     blocks = compact_blocks(
         r, JP, JL, weights, inverse, factors.view, len(ids), len(keys)
@@ -243,6 +305,7 @@ def diagnose(
             "caveat": "boundary support is diagnostic, its count alone does not certify observability",
         }
     return {
+        "native_initialized_only": native_initialized_only,
         "source_sha256": sha256(path),
         "source_report_sha256": sha256(run / "report.json"),
         "package_sha256": code_hash(),
@@ -282,6 +345,7 @@ def main():
     parser.add_argument("--blocks-output", type=Path)
     parser.add_argument("--global-rank", action="store_true")
     parser.add_argument("--rank-limit", type=int, default=2048)
+    parser.add_argument("--native-initialized-only", action="store_true")
     parser.add_argument(
         "--region", type=int, nargs=2, help="received frame interval, stop exclusive"
     )
@@ -296,6 +360,7 @@ def main():
                 global_rank=args.global_rank,
                 region=args.region,
                 rank_limit=args.rank_limit,
+                native_initialized_only=args.native_initialized_only,
             ),
             indent=2,
             allow_nan=False,

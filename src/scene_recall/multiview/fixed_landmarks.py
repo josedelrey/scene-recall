@@ -70,7 +70,9 @@ class DirectFactors:
             raise ValueError("direct factor identities must be nonnegative integers")
         if len(set(zip(self.view, self.track_id, strict=True))) != n:
             raise ValueError("duplicate direct observation")
-        for name in ("points", "pixels", "weights", "whitening_D"):
+        if not self._valid_seed_points():
+            raise ValueError("nonfinite direct factor")
+        for name in ("pixels", "weights", "whitening_D"):
             if not np.isfinite(getattr(self, name)).all():
                 raise ValueError("nonfinite direct factor")
         valid = np.isfinite(self.native_points).all(axis=1) & (
@@ -85,6 +87,9 @@ class DirectFactors:
             raise ValueError("invalid native whitening")
         if any(not is_rigid(m) for m in np.unique(self.T_RcD, axis=0)):
             raise ValueError("native camera transforms must be rigid")
+
+    def _valid_seed_points(self):
+        return np.isfinite(self.points).all()
 
     def fingerprint(self):
         digest = hashlib.sha256()

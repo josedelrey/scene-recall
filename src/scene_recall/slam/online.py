@@ -106,6 +106,8 @@ class OnlineConfig:
             raise TypeError("invalid shared estimation configuration")
         if self.local.support.enabled and not self.shared_estimation:
             raise ValueError("support keyframes require shared estimation")
+        if self.shared.bearings.mode != "off" and not self.shared_estimation:
+            raise ValueError("bearing observations require shared estimation")
         if self.shared_estimation:
             if (
                 self.local.optimize
@@ -168,6 +170,8 @@ class OnlineSLAM:
                 raw_ledger=self.config.observation_welding
                 or self.config.shared_estimation,
                 raw_only=self.config.shared_estimation,
+                raw_bearings=self.config.shared_estimation
+                and self.config.shared.bearings.mode != "off",
             )
         )
         frontend = RecoveryFrontend(
@@ -462,6 +466,34 @@ class OnlineSLAM:
             )
         return events
 
+    def _link_bearings(self, frame, segment, features):
+        if not self.config.shared_estimation or self.config.shared.bearings.mode in (
+            "off",
+            "retain",
+        ):
+            return []
+        candidates = sorted(
+            (
+                key
+                for key in self.bank
+                if self.graph.segments[key] == segment
+                and frame - key < self.config.same_segment_gap
+                and key in self.welding.views
+            ),
+            reverse=True,
+        )[: self.config.shared.bearings.recent_cameras]
+        return [
+            {
+                "source": source,
+                "target": frame,
+                "status": "bearing_reobservation",
+                "bearing": self.welding.link_bearings(
+                    source, frame, self.bank[source][0], features, self.registration
+                ),
+            }
+            for source in candidates
+        ]
+
     def _remember(self, frame, features):
         signature = appearance_signature(features)
         if (
@@ -668,6 +700,9 @@ class OnlineSLAM:
         if admitted and self.welding is not None:
             self.welding.admit(frame, segment, self.local.last_raw_measurement)
             if self.config.shared_estimation:
+                self.welding.record_bearing_descriptors(
+                    frame, self.local.frontend._previous[1]
+                )
                 if self.config.shared.tracker_exposure:
                     self.local.frontend.exposure_transforms = {
                         key: self.welding.views[key].factors.T_RcD[0]
@@ -684,22 +719,22 @@ class OnlineSLAM:
                             strict=True,
                         )
                     )
-                    self.local.frontend.retain_support(
-                        frame,
-                        [
-                            owners[int(feature)]
-                            for feature, native in zip(
-                                view.feature_index, view.native_index, strict=True
-                            )
-                            if native >= 0
-                        ],
-                    )
+                    retained_owners = [
+                        owners[int(feature)]
+                        for feature, native in zip(
+                            view.feature_index, view.native_index, strict=True
+                        )
+                        if native >= 0 and owners[int(feature)] >= 0
+                    ]
+                    if retained_owners or self.config.shared.bearings.mode == "off":
+                        self.local.frontend.retain_support(frame, retained_owners)
                 self.pending_solve = True
         self.anchors.append(self.segment_nodes.get(segment))
         features = self.local.frontend._previous[1]
         events = invalidations
         query_start = perf_counter()
         if admitted:
+            events.extend(self._link_bearings(frame, segment, features))
             events.extend(self._reobserve(frame, segment, features))
             if self.config.loops:
                 events.extend(self._recognize(frame, segment, features))

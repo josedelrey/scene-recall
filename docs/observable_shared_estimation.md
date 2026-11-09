@@ -586,3 +586,7 @@ Fixed-interval source hashes agree across policies. Native refusion is exact for
 Final verification passed 1,116 tests in 117.85 seconds, Ruff and whitespace
 checks. No dependency changed
 and no commit was created.
+
+The [pending bearing study](pending_bearing_estimation.md) implements deferred
+range initialization and verified native-anchor links. It compares their causal
+geometry, observability, reconstruction and scaling against the complete solver.

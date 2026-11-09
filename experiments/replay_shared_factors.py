@@ -19,12 +19,53 @@ from scene_recall.multiview.fixed_landmarks import DirectFactors, direct_cost
 from scene_recall.multiview.joint_ba import landmark_layout
 from scene_recall.odometry.io import load_trajectory
 from scene_recall.run_metadata import code_hash, peak_rss, sha256
+from scene_recall.slam.bearings import RawObservations
 from scene_recall.slam.evaluation import score_components
+from scene_recall.slam.observation_welding import ObservationWelding, RecordedView
 from scene_recall.slam.shared_linearization import (
     ObservationCache,
     RelinearizationConfig,
 )
 from scene_recall.slam.shared_solver import solve_shared
+
+
+def revoke_frozen_alias(arrays, report, rows, edge):
+    """Rebuild exactly the saved live partition before revoking one proposal."""
+    if len(arrays.get("bearing_seed_ids", ())):
+        raise ValueError("alias revocation replay requires native-anchored classes")
+    fits = [
+        fit
+        for frame in report["frames"]
+        if frame["diagnostics"].get("graph")
+        for fit in frame["diagnostics"]["graph"].get("shared", ())
+    ]
+    active = {tuple(map(int, key.split(":"))) for key in fits[-1]["associations"]}
+    if edge not in active:
+        raise ValueError("revocation must target an active saved association")
+    ledger = ObservationWelding(None)
+    for frame in np.unique(arrays["view"]):
+        mask = arrays["view"] == frame
+        packet = RawObservations(
+            **{name: arrays[name][mask] for name in DirectFactors.__dataclass_fields__}
+        )
+        ledger.views[int(frame)] = RecordedView(
+            packet,
+            arrays["feature_index"][mask],
+            arrays["native_index"][mask],
+            rows[int(frame)].segment_id,
+        )
+    for source, target, a, b in arrays["associations"]:
+        ledger.associations.setdefault((int(source), int(target)), []).append(
+            (int(a), int(b))
+        )
+    before, _ = ledger._identities(active)
+    if before != dict(arrays["live_identities"]):
+        raise ValueError(
+            "reconstructed partition does not match the original live identities"
+        )
+    ledger.revoke(*edge)
+    after, _ = ledger._identities(active - {edge})
+    return after
 
 
 def replay(
@@ -37,6 +78,7 @@ def replay(
     preconditioner="jacobi",
     selective=False,
     gauge_transport=False,
+    revoke_edge=None,
 ):
     if output.exists():
         raise ValueError("choose a fresh replay directory")
@@ -56,10 +98,17 @@ def replay(
         "preconditioner": preconditioner,
         "selective": selective,
         "gauge_transport": gauge_transport,
+        **({"revoked_edge": list(revoke_edge)} if revoke_edge is not None else {}),
     }
     output.mkdir(parents=True)
     (output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
-    identities = dict(arrays["live_identities"])
+    if revoke_edge is not None and identity != "live":
+        raise ValueError("alias revocation requires the live partition")
+    identities = (
+        revoke_frozen_alias(arrays, report, rows, tuple(revoke_edge))
+        if revoke_edge is not None
+        else dict(arrays["live_identities"])
+    )
     tracks = np.array(
         [
             identities[track] if identity == "live" else track
@@ -76,7 +125,11 @@ def replay(
     selected = {
         track
         for track, views in observers.items()
-        if len(views) >= 2 and track in native
+        if len(views) >= 2
+        and (
+            track in native
+            or (identity == "live" and track in arrays.get("bearing_seed_ids", ()))
+        )
     }
     mask = np.isin(tracks, list(selected))
     keys = sorted(map(int, np.unique(arrays["view"])))
@@ -91,7 +144,16 @@ def replay(
     ):
         if track in selected and track not in seeds and np.isfinite(point).all():
             seeds[track] = transform_points(point, depth_poses[frame])
-    if identity == "live":
+    if identity == "live" and revoke_edge is None:
+        seeds.update(
+            dict(
+                zip(
+                    arrays.get("bearing_seed_ids", ()),
+                    arrays.get("bearing_seed_points", ()),
+                    strict=True,
+                )
+            )
+        )
         seeds.update(
             {
                 int(key): point
@@ -145,6 +207,8 @@ def replay(
         )
         return {
             loss: direct_cost(residual, factors, replace(config, loss=loss))[0]
+            if residual is not None
+            else None
             for loss in ("linear", "cauchy")
         }
 
@@ -201,6 +265,9 @@ def main():
     )
     parser.add_argument("--selective", action="store_true")
     parser.add_argument("--gauge-transport", action="store_true")
+    parser.add_argument(
+        "--revoke-edge", nargs=2, type=int, metavar=("SOURCE", "TARGET")
+    )
     args = parser.parse_args()
     replay(
         args.run,
@@ -211,6 +278,7 @@ def main():
         preconditioner=args.preconditioner,
         selective=args.selective,
         gauge_transport=args.gauge_transport,
+        revoke_edge=args.revoke_edge,
     )
 
 

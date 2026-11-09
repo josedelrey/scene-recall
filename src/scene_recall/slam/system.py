@@ -50,8 +50,13 @@ class SLAMConfig:
     )
     timing: TimingConfig = field(default_factory=TimingConfig)
     support: SupportConfig = field(default_factory=SupportConfig)
+    raw_bearings: bool = False
 
     def __post_init__(self):
+        if not isinstance(self.raw_bearings, bool):
+            raise TypeError("raw bearing capture must be boolean")
+        if self.raw_bearings and not (self.raw_only and self.raw_ledger):
+            raise ValueError("raw bearings require the shared raw-only ledger")
         for name, lower in (
             ("window_size", 3),
             ("keyframe_interval", 1),
@@ -422,7 +427,29 @@ class IncrementalSLAM:
         pose = depth_pose @ np.linalg.inv(samples.T_RcD)
         owners = self.frontend.owners[key]
         valid = np.flatnonzero(owners >= 0)
-        if self.config.raw_ledger and len(valid):
+        if self.config.raw_bearings:
+            # Unknown range is explicit metadata, never a synthetic metric seed.
+            seeds = np.full((len(owners), 3), np.nan)
+            for i in valid:
+                seeds[i] = (
+                    transform_points(samples.points_R[i], pose)
+                    if samples.source_index[i] >= 0
+                    else self.frontend.landmarks[int(owners[i])].point_S
+                )
+            self.last_raw_measurement = {
+                "view": np.full(len(owners), key, dtype=int),
+                "track_id": np.arange(len(owners)),
+                "points": seeds,
+                "pixels": features.pixels.copy(),
+                "native_points": samples.points_D.copy(),
+                "T_RcD": np.repeat(samples.T_RcD[None], len(owners), axis=0),
+                "whitening_D": samples.whitening_D.copy(),
+                "weights": np.ones(len(owners)),
+                "feature_index": np.arange(len(owners)),
+                "native_index": samples.source_index.copy(),
+                "frontend_identity": owners.copy(),
+            }
+        elif self.config.raw_ledger and len(valid):
             if len(np.unique(owners[valid])) != len(valid):
                 raise ValueError("frontend identity has multiple features in one view")
             seeds = []

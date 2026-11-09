@@ -14,6 +14,7 @@ from scene_recall.geometry.camera import transform_points
 from scene_recall.multiview.batch_ba import BatchConfig
 from scene_recall.multiview.fixed_landmarks import DirectFactors
 from scene_recall.multiview.tracking import match_descriptors
+from scene_recall.slam.bearings import BearingConfig, BearingLedger
 from scene_recall.slam.observation_welding import ObservationWelding
 from scene_recall.slam.registration import register_correspondences
 from scene_recall.slam.shared_linearization import (
@@ -37,8 +38,11 @@ class SharedConfig:
     retry_linear_failure: bool = False
     reobserve_recent: int = 0
     tracker_exposure: bool = False
+    bearings: BearingConfig = field(default_factory=BearingConfig)
 
     def __post_init__(self):
+        if not isinstance(self.bearings, BearingConfig):
+            raise TypeError("invalid bearing configuration")
         if not isinstance(self.solver, BatchConfig):
             raise TypeError("invalid shared solver configuration")
         if self.linearization not in ("full", "selective"):
@@ -69,7 +73,7 @@ class SharedConfig:
             raise ValueError("rank check camera limit must be an integer >= 2")
 
 
-class SharedEstimator(ObservationWelding):
+class SharedEstimator(BearingLedger, ObservationWelding):
     """Retain nonlinear evidence and warm-start states across every update.
 
     Appending observations triggers one shared solve, including history. Identity
@@ -91,6 +95,17 @@ class SharedEstimator(ObservationWelding):
         self.cache = None
         self.admission_report = {}
         self.reobservations = {}
+        self.bearing_links = {}
+        self.bearing_initializations = {}
+        self.bearing_descriptors = {}
+
+    def record_bearing_descriptors(self, frame, features):
+        if self.shared.bearings.mode == "off" or frame not in self.views:
+            return
+        if features.descriptors is not None:
+            descriptors = features.descriptors[self.views[frame].feature_index].copy()
+            descriptors.setflags(write=False)
+            self.bearing_descriptors[frame] = descriptors
 
     def _native_features(self, frame, features):
         view = self.views[frame]
@@ -197,7 +212,11 @@ class SharedEstimator(ObservationWelding):
         previous = max(
             (k for k in self.views if self.views[k].segment == segment), default=None
         )
-        admitted = super().admit(frame, segment, measurement)
+        admitted = (
+            self._admit_bearings(frame, segment, measurement)
+            if self.shared.bearings.mode != "off"
+            else super().admit(frame, segment, measurement)
+        )
         if admitted:
             packet = self.views[frame].factors
             shared = (
@@ -217,6 +236,7 @@ class SharedEstimator(ObservationWelding):
     def revoke(self, source, target):
         super().revoke(source, target)
         self.reobservations.pop((source, target), None)
+        self.bearing_links.pop((source, target), None)
         # A union split can change every correlated variable. Rebuild its seeds
         # from raw observations instead of retaining a merged point or prior.
         self._partition = None
@@ -249,14 +269,22 @@ class SharedEstimator(ObservationWelding):
         # to the first measured gauge in its tracking segment for publication.
         # Its relative placement remains explicitly initialization-dependent.
         labels, fallback = {}, {}
+        supported_cameras = {
+            frame for identity in native for frame in observers[identity]
+        }
         for segment in set(graph.segments.values()):
             nodes = sorted(k for k in graph.local if graph.segments[k] == segment)
-            measured = [k for k in nodes if k in raw]
+            measured = [
+                k
+                for k in nodes
+                if k in raw
+                and (self.shared.bearings.mode == "off" or k in supported_cameras)
+            ]
             if measured:
                 labels.setdefault(raw[measured[0]], nodes[0])
             anchor = None
             for frame in nodes:
-                if frame in raw:
+                if frame in measured:
                     anchor = frame
                 fallback[frame] = (
                     anchor
@@ -376,7 +404,19 @@ class SharedEstimator(ObservationWelding):
         poses = np.array(
             [placement[k] @ np.linalg.inv(self.views[k].factors.T_RcD[0]) for k in keys]
         )
-        seeds = {}
+        seeds, deferred = self._triangulated_seeds(
+            keys, poses, identities, native, raw, edited
+        )
+        self.bearing_initializations = {k: p.copy() for k, p in seeds.items()}
+        if self.shared.bearings.mode != "off":
+            selected.update(seeds)
+            report["bearings"] = {
+                "mode": self.shared.bearings.mode,
+                "image_only_classes": len(set(observers) - native),
+                "triangulated_classes": len(seeds),
+                "deferred": deferred,
+                "proposal_edges": len(self.bearing_links),
+            }
         for camera, frame in enumerate(keys):
             packet = self.views[frame].factors
             for track, point, exposure in zip(
@@ -478,7 +518,7 @@ class SharedEstimator(ObservationWelding):
         # Unmeasured cameras are explicit rigid output attachments. Every camera
         # with a packet was jointly optimized or fixed as a component gauge.
         for frame, anchor in fallback.items():
-            if frame not in self.views and anchor is not None:
+            if anchor is not None and frame != anchor:
                 placement[frame] = (
                     placement[anchor] @ np.linalg.inv(initial[anchor]) @ initial[frame]
                 )
@@ -503,6 +543,7 @@ class SharedEstimator(ObservationWelding):
             owner: self.estimates[identities[track]].copy()
             for (owner_segment, owner), track in self.identity_map.items()
             if owner_segment == segment
+            and owner >= 0
             and identities.get(track) in self.estimates
             and graph.components.get(anchor) in self.track_components.get(track, ())
         }
@@ -555,4 +596,25 @@ class SharedEstimator(ObservationWelding):
             arrays["reobservation_transforms"] = np.array(
                 [self.reobservations[edge] for edge in sorted(self.reobservations)]
             )
+        if self.shared.bearings.mode != "off":
+            if len(self.bearing_descriptors) == len(self.views) and self.views:
+                arrays["bearing_descriptors"] = np.concatenate(
+                    [self.bearing_descriptors[frame] for frame in self.views]
+                )
+            arrays["bearing_edges"] = np.array(
+                [
+                    (*edge, anchor)
+                    for edge, anchor in sorted(self.bearing_links.items())
+                ],
+                dtype=np.int64,
+            ).reshape(-1, 3)
+            arrays["bearing_seed_ids"] = np.array(
+                sorted(self.bearing_initializations), dtype=np.int64
+            )
+            arrays["bearing_seed_points"] = np.array(
+                [
+                    self.bearing_initializations[k]
+                    for k in sorted(self.bearing_initializations)
+                ]
+            ).reshape(-1, 3)
         return arrays

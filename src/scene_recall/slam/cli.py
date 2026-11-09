@@ -53,6 +53,12 @@ def main():
     parser.add_argument("--shared-reobserve-recent", type=int, default=0)
     parser.add_argument("--shared-tracker-exposure", action="store_true")
     parser.add_argument(
+        "--shared-bearings",
+        choices=("off", "retain", "anchor", "multiview"),
+        default="off",
+    )
+    parser.add_argument("--shared-bearing-budget", type=int, default=128)
+    parser.add_argument(
         "--welding-feedback",
         choices=("camera", "landmark", "joint"),
         nargs="?",
@@ -94,6 +100,11 @@ def main():
             retry_linear_failure=args.shared_retry_linear_failure,
             reobserve_recent=args.shared_reobserve_recent,
             tracker_exposure=args.shared_tracker_exposure,
+            bearings=replace(
+                config.shared.bearings,
+                mode=args.shared_bearings,
+                extra_per_view=args.shared_bearing_budget,
+            ),
             relinearization=replace(
                 config.shared.relinearization,
                 gauge_transport=args.shared_gauge_transport,
